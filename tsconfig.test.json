@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "//": "copy 自 ~/dsh-napcat-bridge/tsconfig.test.json，适配点：include 加入 scripts。",
+  "//why": "tsconfig.json 只 include src，导致 `pnpm typecheck` 不覆盖。探针脚本与 src 是同一套严格档位，必须一并检查，否则脚本里的类型错误只能靠运行时发现。",
+  "include": ["src", "scripts", "tests"]
+}

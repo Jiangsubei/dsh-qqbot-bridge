@@ -1,0 +1,12 @@
+# 来源：copy 自 ~/dsh-napcat-bridge/pnpm-workspace.yaml（AGENTS.md §2.4 复用优先）。
+# pnpm 11 默认忽略依赖的构建脚本，未放行时 `pnpm <script>` 的前置依赖校验会以
+# ERR_PNPM_IGNORED_BUILDS 直接失败。下列包需要其 postinstall 才能正常工作
+# （esbuild 供客户端打包与 tsx；node-pty/koffi 供终端与子进程工具）。
+# 已剔除旧项目里的 better-sqlite3：本项目当前不依赖它（N12 消息落库尚未拍板）。
+allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': true
+  esbuild: true
+  koffi: true
+  node-pty: true
+  protobufjs: true

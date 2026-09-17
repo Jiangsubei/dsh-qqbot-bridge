@@ -1,0 +1,4 @@
+# dsh-qqbot-bridge bundle patch: inserts this plugin into the profile layer stack.
+- insert:
+    - id: dsh-qqbot-bridge
+      name: dsh-qqbot-bridge

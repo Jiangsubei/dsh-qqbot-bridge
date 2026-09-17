@@ -1,0 +1,39 @@
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Node / Dependencies
+node_modules
+dist
+build
+.tsbuildinfo
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+.credentials.yaml
+credentials.yaml
+
+# OS and Editor
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+*.sublime-project
+*.sublime-workspace
+
+# Project runtime data
+data/
+tmp/
+scratch/
+napcat_download/
+*.db
+*.sqlite
+
+# Internal documentation and development archives
+docs/archive/
