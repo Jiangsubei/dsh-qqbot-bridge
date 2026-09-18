@@ -138,14 +138,25 @@ export function validateSafeUrl(rawUrl: string): { safe: boolean; error?: string
 export class QqMediaReceiver implements MediaReceiver {
   private readonly client: Pick<QqClientLike, 'fetchAttachment'>;
   private readonly log: Logger;
-  private readonly mediaDir: string;
-  private readonly maxBytes: number;
+  private mediaDir: string;
+  private maxBytes: number;
+  private readonly dshHome?: string;
 
   constructor(options: QqMediaReceiverOptions) {
     this.client = options.client;
     this.log = options.logger ?? DEFAULT_LOGGER;
     this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+    this.dshHome = options.dshHome;
     this.mediaDir = resolveMediaDir(options.mediaDir, options.dshHome);
+  }
+
+  updateLimits(options: { mediaDir?: string; maxBytes?: number }): void {
+    if (options.maxBytes !== undefined) {
+      this.maxBytes = options.maxBytes;
+    }
+    if (options.mediaDir !== undefined) {
+      this.mediaDir = resolveMediaDir(options.mediaDir, this.dshHome);
+    }
   }
 
   async fetchAll(event: QqC2CMessageEvent, sessionId: string): Promise<InboundMedia[]> {

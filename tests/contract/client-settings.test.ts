@@ -568,5 +568,54 @@ describe('契约测试: 设置卡片保存桥接 buildSettingsBridge（settingsS
       expect(bridge.revision).toBe(0);
       expect(bridge.baseDefaults).toEqual({});
     });
+
+    it('当字段被 reset 后保存，必须下发 op: "unset" 操作以从存储中清除覆盖', async () => {
+      const mutate = vi.fn().mockResolvedValue({ ok: true, value: { revision: 5 } });
+      const ctx = {
+        settingsScope: {
+          bind: () => ({
+            mutate,
+            getSnapshot: () => ({
+              revision: 4,
+              value: { stream_throttle_ms: 600, list_page_size: 10 },
+            }),
+          }),
+        },
+      };
+
+      const bridge = buildSettingsBridge(ctx, ns);
+      const model = new QqbotFormModel({
+        initialValues: { stream_throttle_ms: 600, list_page_size: 10 },
+        revision: 4,
+        baseDefaults: { stream_throttle_ms: 400, list_page_size: 5 },
+      });
+
+      // 用户重置 stream_throttle_ms，同时修改 list_page_size
+      model.resetField('stream_throttle_ms');
+      model.setField('list_page_size', 20);
+
+      await model.save({
+        saveSettings: (values, options) => bridge.onSaveSettings(values, options, model.getResetFields()),
+      });
+
+      expect(mutate).toHaveBeenCalledTimes(1);
+      const ops = mutate.mock.calls[0][0];
+      // 包含 unset stream_throttle_ms 与 set list_page_size
+      expect(ops).toContainEqual({ op: 'unset', path: ['stream_throttle_ms'] });
+      expect(ops).toContainEqual({ op: 'set', path: ['list_page_size'], value: 20 });
+    });
+
+    it('数值字段输入 0 时不能被判定为 falsy 而回退成默认值', () => {
+      const model = new QqbotFormModel({
+        initialValues: { stream_throttle_ms: 400 },
+        revision: 1,
+        baseDefaults: { stream_throttle_ms: 400 },
+      });
+
+      model.setField('stream_throttle_ms', 0);
+      expect(model.getDraft().stream_throttle_ms).toBe(0);
+      expect(model.isDirty()).toBe(true);
+      expect(model.isOverridden('stream_throttle_ms')).toBe(true);
+    });
   });
 });

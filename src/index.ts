@@ -156,6 +156,11 @@ export interface QqBridgeWiring {
   dispose(): Promise<void>;
 }
 
+interface InternalWiring extends QqBridgeWiring {
+  credential: QqCredential;
+  updateConfig: (newCfg: PluginConfig) => void;
+}
+
 function runDisposers(disposers: Array<() => void>): void {
   for (const dispose of disposers) {
     try {
@@ -167,56 +172,27 @@ function runDisposers(disposers: Array<() => void>): void {
 }
 
 /**
- * 完成全部接线。凭据缺失时返回 `undefined`（离线待机，插件仍挂载并注册设置面板）。
+ * 内部完整接线工厂：根据给定的有效凭据与配置构建全套桥接运行时。
  */
-export async function wire(
+async function createWiring(
   ctx: Context,
-  config: PluginConfig = {},
-  options: QqBridgeWireOptions = {}
-): Promise<QqBridgeWiring | undefined> {
-  const logger: Logger = resolveLogger(ctx, PLUGIN_NAME);
-  let currentConfig = (): PluginConfig => config;
-
-  // ── 1. 设置面板（注册配置命名空间与模式） ──
-  ctx.inject(['settings'], (settingsCtx) => {
-    const settings = (settingsCtx as unknown as { settings?: { installSection?: (...a: unknown[]) => void } }).settings;
-    if (!settings?.installSection) {
-      logger.warn('settings 服务不可用：配置面板未注册（插件仍按传入/默认配置运行）');
-      return;
-    }
-    settings.installSection(ctx, SETTINGS_NAMESPACE, PluginConfigSchema, config, {
-      setSource: (source: () => PluginConfig) => {
-        currentConfig = () => ({ ...config, ...(source() ?? {}) });
-      },
-      onChange: () => {
-        logger.info('配置已更新（连接类改动需重启插件生效）');
-      },
-    });
-  });
-
-  const cfg = currentConfig();
-
-  // ── 2. 凭据：缺失则进入"离线待机"（不阻断插件挂载） ──
-  const dshHome = resolveDshHome();
-  const { credential, reason } = resolveCredentials(cfg, { dshHome });
-  if (!credential) {
-    logger.warn(`QQ 凭据缺失，插件处于离线待机：${reason}`);
-    return undefined;
-  }
-
+  cfg: PluginConfig,
+  credential: QqCredential,
+  options: QqBridgeWireOptions,
+  currentConfigGetter: () => PluginConfig,
+  sessionActivity: ControlContext['sessionActivity'],
+  logger: Logger,
+): Promise<InternalWiring> {
   const disposers: Array<() => void> = [];
+  const dshHome = resolveDshHome();
 
-  // ── 3. 协议客户端与出站基础设施 ──
+  // ── 1. 协议客户端与出站基础设施 ──
   const client =
     options.createClient?.({ credentials: credential, logger }) ??
     new QqClient({ credentials: credential, logger });
   const markdown = new QqMarkdownAdapter();
   const slots = new MsgSeqSlotAllocator();
   const sender = new PerPeerSerialSender();
-  /**
-   * 发普通消息前先等该 peer 的正文流处理完（防截断，见 `QqStreamManagerOptions.settleStream`）。
-   * 由下方 turn-router 装配后赋值——两者互相依赖（router 需要 streams），故用闭包间接引用。
-   */
   let settleStreamPeer: (openid: string) => Promise<void> = async () => undefined;
   const streams = new QqStreamManager({
     client,
@@ -236,60 +212,14 @@ export async function wire(
     ...(cfg.media_max_bytes !== undefined ? { maxBytes: cfg.media_max_bytes } : {}),
   });
 
-  // ── 4. 控制层（接管 DSH 已有会话；D28 启动恢复） ──
+  // ── 2. 控制层（接管 DSH 已有会话；D28 启动恢复） ──
   const permissionPresets = optionalService<PermissionPresetsLike>(ctx, 'permissionPresets');
   const sessionTitle = optionalService(ctx, 'sessionTitle');
   const sessionQuery = optionalService(ctx, 'sessionQuery');
   const agentDefaultModel = optionalService(ctx, 'agentDefaultModel');
   const agentPresets = optionalService(ctx, 'agentPresets');
   const tokenMeter = optionalService(ctx, 'tokenMeter');
-  // `/压缩`（D44）直调的官方压缩服务（由 dsh-base 的 compaction-basic 装载；缺失时如实回「不可用」）
   const compaction = optionalService<CompactionEngine>(ctx, 'compaction');
-  /**
-   * D46：会话活跃元数据（时间 / 空白 / origin）——官方 `sessionController.list()`
-   * 就是 WebUI 侧边栏的数据源（`SessionSummary.updatedAt/blank/origin`）。
-   *
-   * ⚠️ **必须用 `ctx.inject` 动态注入，不能在 `apply()` 里用 `ctx.get` 读一次**。
-   * 这是**时序**问题（不是 isolate 隔离）：插件 `apply()` 执行得很早，后挂载的服务此刻尚未注册，
-   * `ctx.get` 只返回**当时**的快照。真机探针 SESSION-LIST 的替身 bundle（与本插件同位置、同静态
-   * `inject`）实测：
-   *   - `apply` 时刻：`sessionController` 等**全部**服务都是 `undefined`；
-   *   - `apply+2s`：**普通 `ctx.get` 已能拿到** `sessionController` ⇒ 证明**没有隔离边界**，
-   *     只是 apply 时还没装配好。本插件静态 `inject` 里的 4 个必需服务则因注入被 cordis 等待；
-   * ⇒ 旧实现把 `optionalService(ctx,'sessionController')` 读在 `apply()` 里，于是**永远读不到**，
-   * 表现为「时间与空白过滤整体失效」。`ctx.inject` 让 cordis 在该服务可用后再执行回调。
-   *
-   * 不用静态 `inject` 数组：`sessionController` 在 headless / base-only 装配里**不存在**，
-   * 放进静态 inject 会让插件永远等待、`apply` 不执行。动态注入只在该服务出现时接线，
-   * 缺席则永不回调（控制层降级：不显示时间、不过滤空白，功能不受影响）。
-   */
-  let activitySource: ControlContext['sessionActivity'];
-  ctx.inject(['sessionController'], (scCtx) => {
-    const controller = (scCtx as unknown as { sessionController?: SessionControllerLike }).sessionController;
-    // ⚠️ 必须 `bind`：裸取 `?.list` 会丢 `this`，调用即抛（探针 SESSION-LIST 抓到过这个降级静默）
-    const list = controller?.list?.bind(controller);
-    if (list === undefined) return;
-    activitySource = {
-      async list() {
-        const value = await list({}, new AbortController().signal);
-        return value.items.map((item) => ({
-          sessionId: String(item.sessionId),
-          updatedAt: item.updatedAt,
-          blank: item.blank,
-          ...(item.origin !== undefined ? { origin: item.origin } : {}),
-        }));
-      },
-    };
-  });
-  /**
-   * 稳定的转发对象：注入回调可能在 `openControlService` 之后才执行，因此**调用时**才读取
-   * `activitySource`；未接线时返回空表（控制层据此降级）。
-   */
-  const sessionActivity: ControlContext['sessionActivity'] = {
-    async list() {
-      return activitySource === undefined ? [] : activitySource.list();
-    },
-  };
 
   const controlCtx: ControlContext = {
     workspaceRegistry: requireService(ctx, 'workspaceRegistry'),
@@ -306,56 +236,28 @@ export async function wire(
     ...(sessionActivity !== undefined ? { sessionActivity } : {}),
     logger,
   };
+
   const opened = await openControlService(controlCtx, {
     homeDir: os.homedir(),
-    // D36：默认工作区 —— 配置留空时用内置 `$DSH_HOME/workspace/default`
-    //（惰性 mkdir -p + 注册工作区，由 createSession 完成；不会落到用户主目录）
     defaultWorkspacePath: (cfg.default_workspace ?? '').trim() || resolveDefaultWorkspacePath(dshHome),
     restoreOnStart: true,
   });
   const control = opened.control;
   logger.info(`控制层就绪：启动恢复 ${opened.restore.targets.length} 条目标`);
-  /** D36：`allow_create_session`（默认 true）——同时管住 `/新建` 与未选中态的自动新建 */
-  const allowCreateSession = cfg.allow_create_session !== false;
 
-  // ── 5. openid ↔ sessionId 归属与回复锚点（turn-router / 交互层 / 工具都要用） ──
-  const lastInbound = new Map<string, OutboundTarget>(); // openid -> 最近一条入站锚点
-  /**
-   * 「谁当前控制该会话」——**权威来源是控制目标表**（`control.findControlOwner`），
-   * 不是历史映射。
-   *
-   * D49 修掉的真实缺陷：此前这里是一张 **只写不删** 的 `sessionOwner` 映射
-   * （写于 `onSessionSelected` 与每条入站消息，全仓无 delete/clear）⇒ 用户 `/会话` 切走之后，
-   * 旧会话在 WebUI 里说话仍会被出站到 QQ。D40 早已把**卡片**判据换成 `findControlOwner`，
-   * 但**正文出站没换**，`tests/contract/dsh-control.test.ts:209` 的注释也点名过这张历史映射。
-   */
+  // ── 3. openid ↔ sessionId 归属与回复锚点 ──
+  const lastInbound = new Map<string, OutboundTarget>();
   const openidOf = (sessionId: string): string | undefined => control.findControlOwner(sessionId);
-
-  /**
-   * D49：**回合归属**（sessionId → 当前 turn 是否由本桥接投喂）。
-   *
-   * 官方没有「回合发起方 / prompt 来源」字段（`ApprovalRequestEvent`/`AskUserQuestionRequestEvent`
-   * 载荷都不带来源；`lastPromptAt` 的 `source.kind === 'user'` 对 WebUI 与 QQ 完全同质），
-   * 所以只能桥接侧自记：投喂时记下 `Message.id`（官方明写跨表示边界稳定），
-   * 再用 `'user/message'` 事件的 data（就是那个 `UserMessage`）对拍。
-   *
-   * 规则：由最后一条 user/message 决定回合归属。WebUI 发起的回合在 QQ 侧保持静默。
-   */
   const turnOrigin = new Map<string, 'qq' | 'other'>();
   const isOwnTurn = (sessionId: string): boolean => turnOrigin.get(sessionId) === 'qq';
 
-  /**
-   * turn 级回复锚点（N9，`src/dsh/anchors.ts`）。
-   * 入站消息先 `trackPending` 排队，`session/event` 的 `turn/start` 把它锚定到该 turn；
-   * 出站优先取活跃 turn 的锚点，取不到再回退"最近一条入站"。
-   * 这样多条消息排队时，每个 turn 的引用/@ 前缀都能绑到**它自己那条**入站消息。
-   */
   const anchors = createTurnAnchors();
   const resolveTarget = (openid: string): OutboundTarget | undefined =>
     anchors.active(openid) ?? lastInbound.get(openid);
 
   type EventCtx = { on(event: string, handler: (...args: unknown[]) => unknown): unknown };
   const eventCtx = ctx as unknown as EventCtx;
+
   const offTurnStart = eventCtx.on('session/event', (...args: unknown[]) => {
     const session = args[0] as { id?: string } | undefined;
     const event = args[1] as { type?: string; data?: { turn?: number } } | undefined;
@@ -369,22 +271,12 @@ export async function wire(
     anchors.clear();
   });
 
-  /**
-   * D49：回合归属监听 —— `'user/message'` 事件的 data **就是**投喂时创建的那个 `UserMessage`
-   *（【文档明写】`dsh-session/lib/types/types.d.ts:281`），用 `Message.id` 对拍即可判定这个 turn
-   * 是不是 QQ 投喂的。官方没有来源字段（载荷级证据见 `isOwnTurn` 注释），这是唯一可靠判据。
-   */
   const offUserMessage = eventCtx.on('session/event', (...args: unknown[]) => {
     const session = args[0] as { id?: string } | undefined;
     const event = args[1] as
       | { type?: string; data?: { id?: unknown; source?: { kind?: unknown } } }
       | undefined;
     if (event?.type !== 'user/message' || !session?.id) return;
-    // ⚠️ 只把**真人 prompt**（`source.kind === 'user'`）算作回合来源。真机装配测试抓到：
-    //    每回合 DSH 还会注入一条 `source.kind === 'plugin'` 的 **system-prompt 快照**
-    //    （`@deepseek-ai/dsh-system-prompt`，同为 `user/message`）——它不是 prompt 来源，
-    //    若算进来会立刻把归属翻成「非 QQ」，导致 QQ 自己的回合也不出站。
-    //    谓词与官方 `lastPromptAt` 完全一致（`dsh-api-session-controller/lib/types/list.js:28-36`）。
     if (event.data?.source?.kind !== 'user') return;
     const messageId = event.data.id;
     if (typeof messageId !== 'string') {
@@ -405,16 +297,9 @@ export async function wire(
     }
   };
 
-  // ── 6. 远端交互（审批 / 提问；设计文档 §4 前两层） ──
+  // ── 4. 远端交互 ──
   const interactions = new QqInteractions({
     sendText: async (openid, text) => {
-      // 投递通道设计：**锚点优先**
-      //   - 活跃 turn 锚点 → 最近一条入站消息（`OutboundTarget.msgId`）⇒ 走**被动回复**；
-      //     真机实测（logs/probe/ACTIVE-MESSAGE-*.summary.json）：4.4 小时前的入站 msg_id 仍可用，
-      //     且同一 msg_id 连发 20 条不触发 40034128 ⇒ 锚点覆盖绝大多数场景。
-      //   - 无锚点（重启后该 openid 尚未发过消息）⇒ 降级为**主动消息**（已实测可发）。
-      //     这是 D6「不做主动消息」的**显式例外**：仅用于审批/提问这类**阻塞型**交互——
-      //     不发则 agent 一直阻塞到超时并 fail-closed，用户手机上毫无提示。
       const anchor = resolveTarget(openid);
       if (anchor?.msgId) return reply(anchor, text);
       logger.warn(
@@ -422,15 +307,13 @@ export async function wire(
       );
       return reply({ openid }, text);
     },
-    // 判定依据是「该会话此刻是否为某 openid 的控制目标」，不是历史映射
     controlledBy: (sessionId) => control.findControlOwner(sessionId),
-    // 只有本桥接发起的 turn 才处理交互卡片；WebUI 发起的回合委派回 WebUI
     ownTurn: isOwnTurn,
     logger,
   });
   disposers.push(interactions.attach(ctx));
 
-  // ── 7. 命令层 + 入站管线（paging 必须与 dispatcher 共用同一实例） ──
+  // ── 5. 命令层 + 入站管线（使用 getter 函数动态获取当前配置） ──
   const paging = createPagingStore();
   const models: OfficialModelService = {
     async list() {
@@ -494,11 +377,12 @@ export async function wire(
     logger,
     models,
     permissions,
-    allowCreateSession,
-    ...(cfg.reply_max_chars !== undefined ? { replyMaxChars: cfg.reply_max_chars } : {}),
-    ...(cfg.list_page_size !== undefined ? { listPageSize: cfg.list_page_size } : {}),
-    ...(cfg.status_show_usage !== undefined ? { statusShowUsage: cfg.status_show_usage } : {}),
+    allowCreateSession: () => currentConfigGetter().allow_create_session !== false,
+    replyMaxChars: () => currentConfigGetter().reply_max_chars,
+    listPageSize: () => currentConfigGetter().list_page_size,
+    statusShowUsage: () => currentConfigGetter().status_show_usage,
   });
+
   const pipeline = createInboundPipeline({
     approval: interactions.approval,
     question: interactions.question,
@@ -509,19 +393,23 @@ export async function wire(
     media: mediaReceiver,
     markdown,
     reply,
-    allowCreateSession,
-    // D49：不再需要「自动新建后补写 sessionId→openid 映射」——归属改由控制目标表权威反查
-    // （`openidOf` = `control.findControlOwner`），`createSession` 本身就会设定控制目标。
+    allowCreateSession: () => currentConfigGetter().allow_create_session !== false,
     logger,
   });
 
-  // ── 8. DSH 流式事件 → QQ 出站（turn-router） ──
-  const router = new TurnRouter({ streams, openidOf, resolveTarget, ownTurn: isOwnTurn, logger });
-  // 接线：普通消息（审批/提问卡片、命令回执）收流前，先等该 peer 的正文增量推完
+  // ── 6. DSH 流式事件 → QQ 出站（turn-router） ──
+  const router = new TurnRouter({
+    streams,
+    openidOf,
+    resolveTarget,
+    ownTurn: isOwnTurn,
+    isStreamEnabled: () => currentConfigGetter().stream_enabled !== false,
+    logger,
+  });
   settleStreamPeer = (openid) => router.drainPeer(openid);
   disposers.push(router.attach(eventCtx));
 
-  // ── 9. Agent 工具：send_file / send_image ──
+  // ── 7. Agent 工具：send_file / send_image ──
   disposers.push(
     registerAgentTools(ctx, {
       media: mediaSender,
@@ -534,7 +422,7 @@ export async function wire(
     })
   );
 
-  // ── 10. 入站消息入口 ──
+  // ── 8. 入站消息监听 ──
   client.onC2CMessage(async (event: QqC2CMessageEvent) => {
     const openid = event?.author?.user_openid;
     const msgId = event?.id;
@@ -546,9 +434,6 @@ export async function wire(
     lastInbound.set(openid, target);
     anchors.trackPending(msgId, openid, target);
 
-    // D49：归属/出站判据都改为**实时反查控制目标表**（`openidOf` / `isOwnTurn`），
-    // 因此这里不再需要维护任何历史映射（旧实现每次入站都往 sessionOwner 写一条、永不清理）。
-
     try {
       await pipeline.handle(event);
     } catch (err: unknown) {
@@ -557,32 +442,273 @@ export async function wire(
       await reply({ openid, msgId }, t('inbound.handlingFailed', { message })).catch(() => undefined);
     }
   });
+
   client.onReady((info) => {
     logger.info(`机器人已上线：${info.botName}(${info.botId})`);
   });
 
-  // ── 11. 生命周期 ──
-  if (options.autoStart !== false) {
-    // DSH 插件在 apply 执行时服务已注入完毕，客户端在此直接启动并进入连接循环。
-    void client.start().catch((err: unknown) => logger.error('启动 QQ 客户端失败', err));
-  }
-
-  let disposed = false;
+  let isWiringDisposed = false;
   const dispose = async (): Promise<void> => {
-    if (disposed) return;
-    disposed = true;
+    if (isWiringDisposed) return;
+    isWiringDisposed = true;
     runDisposers(disposers);
     client.stop();
     await router.drain().catch(() => undefined);
     await opened.dispose().catch((err: unknown) => logger.error('释放控制层失败', err));
   };
 
+  const updateConfig = (newCfg: PluginConfig): void => {
+    streams.updateThrottle(newCfg.stream_throttle_ms);
+    mediaReceiver.updateLimits({
+      maxBytes: newCfg.media_max_bytes,
+      mediaDir: newCfg.media_dir,
+    });
+  };
+
+  return {
+    client,
+    control,
+    pipeline,
+    router,
+    streams,
+    interactions,
+    isOwnTurn,
+    credential,
+    updateConfig,
+    dispose,
+  };
+}
+
+/**
+ * 完成全部接线。凭据缺失时返回 `undefined`（离线待机，插件仍挂载并注册设置面板）。
+ * 内置 Reconciler 状态机，当设置面板更新凭据时自动热上线。
+ */
+export async function wire(
+  ctx: Context,
+  config: PluginConfig = {},
+  options: QqBridgeWireOptions = {}
+): Promise<QqBridgeWiring | undefined> {
+  const logger: Logger = resolveLogger(ctx, PLUGIN_NAME);
+  const dshHome = resolveDshHome();
+
+  let activeWiring: InternalWiring | undefined = undefined;
+  let configSource: (() => PluginConfig) | undefined = undefined;
+  let settingsInstalled = false;
+  let isRootDisposed = false;
+  let isInitializing = true;
+
+  // ── 读取动态合并配置 ──
+  const readSettings = (): PluginConfig => {
+    if (configSource) return configSource() ?? {};
+    const settingsService = optionalService<any>(ctx, 'settings');
+    return settingsService?.get?.(SETTINGS_NAMESPACE) ?? {};
+  };
+
+  const currentConfig = (): PluginConfig => ({
+    ...config,
+    ...readSettings(),
+  });
+
+  // ── 会话活跃元数据动态数据源 ──
+  let activitySource: ControlContext['sessionActivity'];
+  ctx.inject(['sessionController'], (scCtx) => {
+    const controller = (scCtx as unknown as { sessionController?: SessionControllerLike }).sessionController;
+    const list = controller?.list?.bind(controller);
+    if (list === undefined) return;
+    activitySource = {
+      async list() {
+        const value = await list({}, new AbortController().signal);
+        return value.items.map((item) => ({
+          sessionId: String(item.sessionId),
+          updatedAt: item.updatedAt,
+          blank: item.blank,
+          ...(item.origin !== undefined ? { origin: item.origin } : {}),
+        }));
+      },
+    };
+  });
+  const sessionActivity: ControlContext['sessionActivity'] = {
+    async list() {
+      return activitySource === undefined ? [] : activitySource.list();
+    },
+  };
+
+  // ── Reconciler 状态机：配置变更时对齐运行状态 ──
+  const reconcile = async (forcedConfig?: PluginConfig): Promise<void> => {
+    if (isRootDisposed) return;
+    const latestConfig = forcedConfig ? { ...config, ...forcedConfig } : currentConfig();
+    const { credential: newCred } = resolveCredentials(latestConfig, { dshHome });
+
+    if (!activeWiring) {
+      // 当前处于离线待机状态
+      if (newCred) {
+        logger.info('检测到有效 QQ 凭据，正在上线 QQ 机器人桥接...');
+        try {
+          activeWiring = await createWiring(
+            ctx,
+            latestConfig,
+            newCred,
+            options,
+            currentConfig,
+            sessionActivity,
+            logger,
+          );
+          await activeWiring.client.start();
+          logger.info('QQ 机器人桥接热上线成功');
+        } catch (err) {
+          logger.error('QQ 机器人桥接热上线失败：', err);
+        }
+      }
+      return;
+    }
+
+    // 当前已处于上线状态
+    if (!newCred) {
+      logger.warn('凭据已失效或被移除，QQ 机器人桥接进入离线待机');
+      const oldWiring = activeWiring;
+      activeWiring = undefined;
+      await oldWiring.dispose().catch((err) => logger.error('释放旧接线失败：', err));
+      return;
+    }
+
+    // 检查凭据是否发生实质变更
+    const credChanged =
+      newCred.appId !== activeWiring.credential.appId ||
+      newCred.appSecret !== activeWiring.credential.appSecret;
+
+    if (credChanged) {
+      logger.info('凭据已变更，正在重启 QQ 机器人桥接...');
+      const oldWiring = activeWiring;
+      activeWiring = undefined;
+      await oldWiring.dispose().catch((err) => logger.error('释放旧接线失败：', err));
+      try {
+        activeWiring = await createWiring(
+          ctx,
+          latestConfig,
+          newCred,
+          options,
+          currentConfig,
+          sessionActivity,
+          logger,
+        );
+        await activeWiring.client.start();
+        logger.info('QQ 机器人桥接重启成功');
+      } catch (err) {
+        logger.error('QQ 机器人桥接重启失败：', err);
+      }
+      return;
+    }
+
+    // 凭据未变，通知动态参数热更新
+    activeWiring.updateConfig(latestConfig);
+  };
+
+  let reconcileRunning = false;
+  let pendingConfig: PluginConfig | undefined = undefined;
+
+  const queueReconcile = async (newVal?: PluginConfig): Promise<void> => {
+    if (newVal) pendingConfig = newVal;
+    if (reconcileRunning) return;
+    reconcileRunning = true;
+    try {
+      while (pendingConfig !== undefined || (!activeWiring && !isInitializing)) {
+        const nextCfg = pendingConfig;
+        pendingConfig = undefined;
+        await reconcile(nextCfg);
+        if (pendingConfig === undefined) break;
+      }
+    } finally {
+      reconcileRunning = false;
+    }
+  };
+
+  // ── 设置面板注册（消除 Fiber 调度导致的离线死锁） ──
+  const installSettings = (settingsService: any) => {
+    if (!settingsService?.installSection || settingsInstalled) return;
+    settingsInstalled = true;
+    settingsService.installSection(ctx, SETTINGS_NAMESPACE, PluginConfigSchema, config, {
+      setSource: (source: () => PluginConfig) => {
+        configSource = source;
+        if (!isInitializing && !activeWiring && !isRootDisposed) {
+          void queueReconcile();
+        }
+      },
+      onChange: (newVal: PluginConfig) => {
+        if (isInitializing) return;
+        logger.info('配置已更新，正在对齐运行状态...');
+        void queueReconcile(newVal);
+      },
+    });
+  };
+
+  // 优先直接调用已就绪的 settings 服务（消除延迟），同时保留 inject 监听保证异步挂载兼容
+  const directSettings = optionalService<any>(ctx, 'settings');
+  if (directSettings) {
+    installSettings(directSettings);
+  }
+  ctx.inject(['settings'], (settingsCtx) => {
+    installSettings((settingsCtx as any)?.settings);
+  });
+
+  // ── 初次尝试组装运行链路 ──
+  const initialCfg = currentConfig();
+  const { credential, reason } = resolveCredentials(initialCfg, { dshHome });
+
+  if (credential) {
+    activeWiring = await createWiring(
+      ctx,
+      initialCfg,
+      credential,
+      options,
+      currentConfig,
+      sessionActivity,
+      logger,
+    );
+    if (options.autoStart !== false) {
+      void activeWiring.client.start().catch((err: unknown) => logger.error('启动 QQ 客户端失败：', err));
+    }
+  } else {
+    logger.warn(`QQ 凭据缺失，插件处于离线待机：${reason}`);
+  }
+
+  isInitializing = false;
+
+  // ── 插件根生命周期清理 ──
+  type EventCtx = { on(event: string, handler: (...args: unknown[]) => unknown): unknown };
+  const eventCtx = ctx as unknown as EventCtx;
+
+  const rootDispose = async (): Promise<void> => {
+    if (isRootDisposed) return;
+    isRootDisposed = true;
+    if (activeWiring) {
+      const w = activeWiring;
+      activeWiring = undefined;
+      await w.dispose().catch(() => undefined);
+    }
+  };
+
   eventCtx.on('dispose', () => {
-    void dispose();
+    void rootDispose();
     logger.info('插件已卸载');
   });
 
-  return { client, control, pipeline, router, streams, interactions, isOwnTurn, dispose };
+  if (!activeWiring) {
+    return undefined;
+  }
+
+  // 包装外部暴露的 wiring 引用，确保外部显式 dispose 时同步清理 activeWiring
+  return {
+    client: activeWiring.client,
+    control: activeWiring.control,
+    pipeline: activeWiring.pipeline,
+    router: activeWiring.router,
+    streams: activeWiring.streams,
+    interactions: activeWiring.interactions,
+    isOwnTurn: (sessionId: string) => activeWiring?.isOwnTurn(sessionId) ?? false,
+    dispose: async () => {
+      await rootDispose();
+    },
+  };
 }
 
 /**

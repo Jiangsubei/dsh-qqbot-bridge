@@ -25,6 +25,7 @@ export class QqbotFormModel {
   private draft: Partial<PluginConfig>;
   private revision: number;
   private baseDefaults: Partial<PluginConfig>;
+  private resetFields: Set<keyof PluginConfig> = new Set();
 
   constructor(options: FormModelOptions = {}) {
     this.initialValues = { ...options.initialValues };
@@ -45,11 +46,17 @@ export class QqbotFormModel {
     return this.draft;
   }
 
+  getResetFields(): ReadonlySet<keyof PluginConfig> {
+    return this.resetFields;
+  }
+
   setField<K extends keyof PluginConfig>(key: K, value: PluginConfig[K]) {
     this.draft[key] = value;
+    this.resetFields.delete(key);
   }
 
   resetField<K extends keyof PluginConfig>(key: K) {
+    this.resetFields.add(key);
     if (this.baseDefaults[key] !== undefined) {
       this.draft[key] = this.baseDefaults[key];
     } else {
@@ -65,6 +72,7 @@ export class QqbotFormModel {
   }
 
   isDirty(): boolean {
+    if (this.resetFields.size > 0) return true;
     const keys = Array.from(
       new Set([...Object.keys(this.initialValues), ...Object.keys(this.draft)])
     ) as Array<keyof PluginConfig>;
@@ -85,6 +93,7 @@ export class QqbotFormModel {
 
   discard() {
     this.draft = { ...this.initialValues };
+    this.resetFields.clear();
   }
 
   async save(callbacks: {
@@ -100,5 +109,6 @@ export class QqbotFormModel {
       this.revision = res.revision;
     }
     this.initialValues = { ...this.draft };
+    this.resetFields.clear();
   }
 }

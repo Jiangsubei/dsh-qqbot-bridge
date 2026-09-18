@@ -55,6 +55,8 @@ export interface TurnRouterDeps {
    * 在 turn 的首个 text-delta 时**快照一次**并锁定到 turn 结束，避免中途串到别的消息。
    */
   resolveTarget(openid: string): OutboundTarget | undefined;
+  /** 是否启用流式分片（对应 stream_enabled 配置，为 false 时全程降级整发） */
+  isStreamEnabled?(): boolean;
   logger: Logger;
 }
 
@@ -214,7 +216,8 @@ export class TurnRouter {
     state.buffer += text;
     state.chunks += 1;
 
-    if (!state.handle) {
+    const streamEnabled = this.deps.isStreamEnabled ? this.deps.isStreamEnabled() : true;
+    if (streamEnabled && !state.handle) {
       state.handle = this.deps.streams.open(state.target);
       if (!state.handle) {
         this.deps.logger.debug(`turn-router: 流式不可用，累积全文待 turn 结束一次性发送（openid=${openid.slice(0, 8)}…）`);

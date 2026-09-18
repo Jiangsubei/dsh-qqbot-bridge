@@ -20,7 +20,7 @@ const fields = zhCN.settings.fields;
 
 export const PluginConfigSchema: z<PluginConfig> = z.object({
   app_id: z.string().default('').description(fields.appId.hint),
-  app_secret: z.string().default('').description(fields.appSecret.hint),
+  app_secret: z.string().default('').role('secret').description(fields.appSecret.hint),
   default_workspace: z.string().default('').description(fields.defaultWorkspace.hint),
   stream_enabled: z.boolean().default(true).description(fields.streamEnabled.hint),
   stream_throttle_ms: z.number().default(QQ_STREAM_THROTTLE_MS).description(fields.streamThrottleMs.hint),

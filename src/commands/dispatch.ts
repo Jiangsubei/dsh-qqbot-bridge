@@ -80,16 +80,16 @@ export interface CommandDispatcherOptions {
   /** 官方权限预设服务；缺省时如实回执 */
   permissions?: OfficialPermissionService;
   /** D34：回执截断上限（默认 `REPLY_MAX_CHARS`） */
-  replyMaxChars?: number;
+  replyMaxChars?: number | (() => number | undefined);
   /** 分页大小（默认 `LIST_PAGE_SIZE` = 10，D21） */
-  listPageSize?: number;
+  listPageSize?: number | (() => number | undefined);
   /** D32：`/状态` 是否显示上下文用量（默认显示） */
-  statusShowUsage?: boolean;
+  statusShowUsage?: boolean | (() => boolean | undefined);
   /**
    * D36：`allow_create_session` 开关（默认 true）。
    * 关闭时 `/新建` 被拒（该字段此前只是配置项，未真正生效——本次一并接上）。
    */
-  allowCreateSession?: boolean;
+  allowCreateSession?: boolean | (() => boolean | undefined);
 }
 
 // ═══════════════════════════ 纯文本渲染工具 ═══════════════════════════
@@ -366,19 +366,26 @@ function resolveWorkspaceArg(workspaces: readonly WorkspaceRef[], arg: string): 
 
 export function createCommandDispatcher(options: CommandDispatcherOptions): CommandDispatcher {
   const { control, paging, logger } = options;
-  const pageSize = Number.isFinite(options.listPageSize) && (options.listPageSize ?? 0) >= 1
-    ? Math.floor(options.listPageSize as number)
-    : defaultPageSize();
-  const replyMax = Number.isFinite(options.replyMaxChars) && (options.replyMaxChars ?? 0) > 0
-    ? Math.floor(options.replyMaxChars as number)
-    : REPLY_MAX_CHARS;
-  const statusShowUsage = options.statusShowUsage !== false;
-  /** D36：`allow_create_session` 开关（默认开启） */
-  const allowCreateSession = options.allowCreateSession !== false;
+  const getPageSize = (): number => {
+    const val = typeof options.listPageSize === 'function' ? options.listPageSize() : options.listPageSize;
+    return Number.isFinite(val) && (val ?? 0) >= 1 ? Math.floor(val as number) : defaultPageSize();
+  };
+  const getReplyMax = (): number => {
+    const val = typeof options.replyMaxChars === 'function' ? options.replyMaxChars() : options.replyMaxChars;
+    return Number.isFinite(val) && (val ?? 0) > 0 ? Math.floor(val as number) : REPLY_MAX_CHARS;
+  };
+  const getStatusShowUsage = (): boolean => {
+    const val = typeof options.statusShowUsage === 'function' ? options.statusShowUsage() : options.statusShowUsage;
+    return val !== false;
+  };
+  const getAllowCreateSession = (): boolean => {
+    const val = typeof options.allowCreateSession === 'function' ? options.allowCreateSession() : options.allowCreateSession;
+    return val !== false;
+  };
 
   const done = (reply: string, exitPaging = false): CommandResult => ({
     handled: true,
-    reply: truncateReply(reply, replyMax),
+    reply: truncateReply(reply, getReplyMax()),
     exitPaging,
   });
 
@@ -404,7 +411,7 @@ export function createCommandDispatcher(options: CommandDispatcherOptions): Comm
         existing && existing.listKind === 'sessions' && existing.workspaceId === target.workspaceId
           ? existing.page
           : 1;
-      const page = paginate(sessions, resumePage, pageSize);
+      const page = paginate(sessions, resumePage, getPageSize());
       // 分页状态必须记住 listKind（§5）
       paging.set(cmd.openid, { listKind: 'sessions', workspaceId: target.workspaceId, page: page.page });
       return done(renderSessionList(sessions, page));
@@ -433,7 +440,7 @@ export function createCommandDispatcher(options: CommandDispatcherOptions): Comm
     if (!cmd.args) {
       const existing = paging.get(cmd.openid);
       const archivedIds = new Set(await control.listArchivedSessionIds());
-      const page = paginate(workspaces, existing && existing.listKind === 'workspaces' ? existing.page : 1, pageSize);
+      const page = paginate(workspaces, existing && existing.listKind === 'workspaces' ? existing.page : 1, getPageSize());
       paging.set(cmd.openid, {
         listKind: 'workspaces',
         workspaceId: target.workspaceId ?? '',
@@ -461,7 +468,7 @@ export function createCommandDispatcher(options: CommandDispatcherOptions): Comm
 
   async function handleNew(cmd: CommandContext): Promise<CommandResult> {
     // D36：`allow_create_session=false` 时拒绝新建（此前该配置项未真正生效）
-    if (!allowCreateSession) {
+    if (!getAllowCreateSession()) {
       return done(t('commands.new.disabled'));
     }
     // 语义（D36）：永远在**当前选中的工作区**新建；未选中任何工作区才回退默认工作区
@@ -536,7 +543,7 @@ export function createCommandDispatcher(options: CommandDispatcherOptions): Comm
         value: status.busy ? t('commands.status.busy') : t('commands.status.idle'),
       }),
     ];
-    if (statusShowUsage) lines.push(t('commands.status.usage', { value: renderUsage(status) }));
+    if (getStatusShowUsage()) lines.push(t('commands.status.usage', { value: renderUsage(status) }));
     return done(lines.join('\n'));
   }
 
@@ -567,7 +574,7 @@ export function createCommandDispatcher(options: CommandDispatcherOptions): Comm
     const run = control.compact(cmd.openid);
     return {
       ...done(t('commands.compact.running')),
-      followUp: async () => truncateReply(renderCompactOutcome(await run), replyMax),
+      followUp: async () => truncateReply(renderCompactOutcome(await run), getReplyMax()),
     };
   }
 
@@ -733,7 +740,7 @@ export function createCommandDispatcher(options: CommandDispatcherOptions): Comm
     currentPage: number,
     step: number,
   ): { ok: true; page: Page<T> } | { ok: false; reply: string } {
-    const current = paginate(items, currentPage, pageSize);
+    const current = paginate(items, currentPage, getPageSize());
     const wanted = current.page + step;
     if (wanted < 1) {
       return {
@@ -747,7 +754,7 @@ export function createCommandDispatcher(options: CommandDispatcherOptions): Comm
         reply: t('commands.paging.last', { page: current.page, totalPages: current.totalPages }),
       };
     }
-    return { ok: true, page: paginate(items, wanted, pageSize) };
+    return { ok: true, page: paginate(items, wanted, getPageSize()) };
   }
 
   async function handlePagingTurn(cmd: CommandContext): Promise<CommandResult> {

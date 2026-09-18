@@ -439,4 +439,65 @@ describe('装配闭环：dsh-qqbot-bridge（真实 DSH 装配）', () => {
     // 生产接线生效：投喂之后该会话被判定为「QQ 回合」
     expect(wiring!.isOwnTurn(created.sessionId)).toBe(true);
   });
+
+  it('12) 核心 Bug 修复契约：当入参 config 为空、凭据来自 settings.yaml（面板填写）时能成功上线', async () => {
+    // 确保环境不提供凭据
+    const savedId = process.env.QQ_BOT_APP_ID;
+    const savedSecret = process.env.QQ_BOT_SECRET;
+    delete process.env.QQ_BOT_APP_ID;
+    delete process.env.QQ_BOT_SECRET;
+    try {
+      // 预先写入 settings.yaml
+      const settingsYamlPath = path.join(home, 'settings.yaml');
+      await fsp.writeFile(
+        settingsYamlPath,
+        `dsh-qqbot-bridge:\n  app_id: 'panel-app-id'\n  app_secret: 'panel-app-secret'\n`,
+        'utf8'
+      );
+
+      booted = await bootDshQqbotBridge({ dshHome: home, mountPlugin: false });
+      const fake = new FakeQqClient();
+
+      wiring = await wire(booted.ctx, {}, { createClient: () => fake, autoStart: false });
+
+      expect(wiring).toBeDefined();
+      expect(wiring!.client).toBe(fake);
+    } finally {
+      if (savedId !== undefined) process.env.QQ_BOT_APP_ID = savedId;
+      if (savedSecret !== undefined) process.env.QQ_BOT_SECRET = savedSecret;
+    }
+  });
+
+  it('13) 迟到凭据契约：插件初始离线待机，用户在面板填写保存后（settings 更新）自动热上线', async () => {
+    const savedId = process.env.QQ_BOT_APP_ID;
+    const savedSecret = process.env.QQ_BOT_SECRET;
+    delete process.env.QQ_BOT_APP_ID;
+    delete process.env.QQ_BOT_SECRET;
+    try {
+      booted = await bootDshQqbotBridge({ dshHome: home, mountPlugin: false });
+      const fake = new FakeQqClient();
+
+      // 初始无凭据，处于离线待机
+      wiring = await wire(booted.ctx, {}, { createClient: () => fake, autoStart: false });
+      expect(wiring).toBeUndefined();
+
+      // 模拟用户在设置面板填入凭据并保存（通过 settings.update）
+      const settingsService = booted.ctx.get('settings') as {
+        update: (ns: string, patch: object) => Promise<void>;
+      };
+      expect(settingsService).toBeDefined();
+
+      await settingsService.update(SETTINGS_NAMESPACE, {
+        app_id: 'late-app-id',
+        app_secret: 'late-app-secret',
+      });
+
+      // 等待 Reconciler 监听到变化并自动上线
+      const online = await waitFor(() => fake.started, 2000);
+      expect(online).toBe(true);
+    } finally {
+      if (savedId !== undefined) process.env.QQ_BOT_APP_ID = savedId;
+      if (savedSecret !== undefined) process.env.QQ_BOT_SECRET = savedSecret;
+    }
+  });
 });

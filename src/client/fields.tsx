@@ -16,6 +16,7 @@ export interface ValueFieldProps {
   value: string;
   disabled?: boolean;
   numeric?: boolean;
+  type?: 'text' | 'password' | 'number';
   overridden?: boolean;
   onReset?: () => void;
   onChange: (value: string) => void;
@@ -48,7 +49,7 @@ export function ValueField(props: ValueFieldProps): React.JSX.Element {
       </div>
       <input
         id={props.id}
-        type={props.numeric ? 'number' : 'text'}
+        type={props.type || (props.numeric ? 'number' : 'text')}
         className={fieldStyle.input}
         placeholder={props.placeholder}
         value={props.value}

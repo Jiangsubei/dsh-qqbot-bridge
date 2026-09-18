@@ -451,7 +451,7 @@ export interface InboundDeps {
    * D36：`allow_create_session` 开关（默认 true）。
    * 关闭时未选中态的普通消息退回 D19/D27 的「只提示不转发」，**不自动新建会话**。
    */
-  allowCreateSession?: boolean;
+  allowCreateSession?: boolean | (() => boolean);
   /**
    * D36 接线钩子：自动新建会话成功后**立即**回调 `(sessionId, openid)`。
    *

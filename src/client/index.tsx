@@ -11,6 +11,8 @@ import { t } from '../i18n/index.js';
 export const name = 'dsh-qqbot-bridge/client';
 export const inject = ['slots', 'settingsScope'];
 
+const EMPTY_CONFIG: Record<string, unknown> = Object.freeze({});
+
 /**
  * Build the card props bridge for one settings namespace.
  */
@@ -28,6 +30,7 @@ export function buildSettingsBridge(ctx: any, namespace: string = SETTINGS_NAMES
         value: scopeSnap.value ?? scopeSnap.user,
         revision: scopeSnap.revision,
         base: scopeSnap.base,
+        secrets: scopeSnap.secrets,
       };
     }
     return undefined;
@@ -35,29 +38,40 @@ export function buildSettingsBridge(ctx: any, namespace: string = SETTINGS_NAMES
 
   return {
     get initialConfig() {
-      return readNamespace()?.value ?? {};
+      return readNamespace()?.value ?? EMPTY_CONFIG;
     },
     get revision() {
       return readNamespace()?.revision ?? 0;
     },
     get baseDefaults() {
-      return readNamespace()?.base ?? {};
+      return readNamespace()?.base ?? EMPTY_CONFIG;
     },
     get hasSecret() {
-      return false;
+      const row = readNamespace();
+      return Array.isArray(row?.secrets) && row.secrets.length > 0;
     },
     onSaveSettings: async (
       values: Record<string, unknown>,
-      options: { expectedRevision: number }
+      options: { expectedRevision: number },
+      resetFields?: ReadonlySet<string>
     ) => {
       const targetScope = scope ?? ctx.settingsScope?.bind?.({ namespace }) ?? ctx.settingsScope;
       if (!targetScope?.mutate) throw new Error(t('settings.errors.unavailable'));
 
-      const ops = Object.entries(values ?? {}).map(([field, value]) => ({
-        op: 'set' as const,
-        path: [field],
-        value,
-      }));
+      const resets = resetFields ?? new Set<string>();
+      const ops = [
+        ...Array.from(resets).map((field) => ({
+          op: 'unset' as const,
+          path: [field],
+        })),
+        ...Object.entries(values ?? {})
+          .filter(([field]) => !resets.has(field))
+          .map(([field, value]) => ({
+            op: 'set' as const,
+            path: [field],
+            value,
+          })),
+      ];
 
       const latestRow = readNamespace();
       const expectedRevision =

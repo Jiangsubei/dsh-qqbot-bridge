@@ -43,7 +43,10 @@ function buildOutboundTarget(event: QqC2CMessageEvent, openid: string): Outbound
 export function createInboundPipeline(deps: InboundDeps): InboundPipeline {
   const { approval, question, paging, commands, control, media, reply, logger } = deps;
   /** D36：`allow_create_session` 开关（缺省开启） */
-  const allowCreateSession = deps.allowCreateSession !== false;
+  const isAllowCreateSession = (): boolean => {
+    const val = typeof deps.allowCreateSession === 'function' ? deps.allowCreateSession() : deps.allowCreateSession;
+    return val !== false;
+  };
 
   /** 回执发送失败只记日志（不得让二次失败冒泡成未处理异常） */
   async function safeReply(target: OutboundTarget, text: string): Promise<void> {
@@ -71,7 +74,7 @@ export function createInboundPipeline(deps: InboundDeps): InboundPipeline {
     const current = await control.getTarget(openid);
     if (current.sessionId) return current.sessionId;
 
-    if (!allowCreateSession) {
+    if (!isAllowCreateSession()) {
       await safeReply(target, t('common.noTarget'));
       return null;
     }

@@ -66,7 +66,8 @@ export interface CardProps {
     | ((controller: CardController) => void);
   onSaveSettings?: (
     values: Partial<PluginConfig>,
-    options: { expectedRevision: number }
+    options: { expectedRevision: number },
+    resetFields?: ReadonlySet<string>
   ) => Promise<{ revision?: number } | void>;
 }
 
@@ -170,7 +171,10 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
 
     try {
       await model.save({
-        saveSettings: props.onSaveSettings,
+        saveSettings: (values, options) => {
+          if (!props.onSaveSettings) return Promise.resolve();
+          return props.onSaveSettings(values, options, model.getResetFields());
+        },
       });
       forceUpdate();
     } catch (err: any) {
@@ -308,6 +312,7 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
               id="qqbot-app-secret"
               label={F.appSecret.label}
               hint={F.appSecret.hint}
+              type="password"
               value={draft.app_secret || ''}
               disabled={saving}
               overridden={model.isOverridden('app_secret')}
@@ -358,9 +363,13 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
               disabled={saving || !(draft.stream_enabled ?? true)}
               overridden={model.isOverridden('stream_throttle_ms')}
               onReset={() => handleResetField('stream_throttle_ms')}
-              onChange={(val) =>
-                handleFieldChange('stream_throttle_ms', parseInt(val, 10) || QQ_STREAM_THROTTLE_MS)
-              }
+              onChange={(val) => {
+                const parsed = parseInt(val, 10);
+                handleFieldChange(
+                  'stream_throttle_ms',
+                  Number.isNaN(parsed) ? QQ_STREAM_THROTTLE_MS : parsed
+                );
+              }}
             />
 
             <SwitchField
@@ -406,9 +415,13 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
               disabled={saving}
               overridden={model.isOverridden('media_max_bytes')}
               onReset={() => handleResetField('media_max_bytes')}
-              onChange={(val) =>
-                handleFieldChange('media_max_bytes', parseInt(val, 10) || QQ_MEDIA_HARD_LIMIT)
-              }
+              onChange={(val) => {
+                const parsed = parseInt(val, 10);
+                handleFieldChange(
+                  'media_max_bytes',
+                  Number.isNaN(parsed) ? QQ_MEDIA_HARD_LIMIT : parsed
+                );
+              }}
             />
           </div>
 
@@ -431,9 +444,13 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
               disabled={saving}
               overridden={model.isOverridden('reply_max_chars')}
               onReset={() => handleResetField('reply_max_chars')}
-              onChange={(val) =>
-                handleFieldChange('reply_max_chars', parseInt(val, 10) || REPLY_MAX_CHARS)
-              }
+              onChange={(val) => {
+                const parsed = parseInt(val, 10);
+                handleFieldChange(
+                  'reply_max_chars',
+                  Number.isNaN(parsed) ? REPLY_MAX_CHARS : parsed
+                );
+              }}
             />
 
             <ValueField
@@ -446,9 +463,13 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
               disabled={saving}
               overridden={model.isOverridden('list_page_size')}
               onReset={() => handleResetField('list_page_size')}
-              onChange={(val) =>
-                handleFieldChange('list_page_size', parseInt(val, 10) || LIST_PAGE_SIZE)
-              }
+              onChange={(val) => {
+                const parsed = parseInt(val, 10);
+                handleFieldChange(
+                  'list_page_size',
+                  Number.isNaN(parsed) ? LIST_PAGE_SIZE : parsed
+                );
+              }}
             />
 
             <SwitchField

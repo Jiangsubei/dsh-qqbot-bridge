@@ -403,7 +403,7 @@ export class QqStreamManager implements StreamManager {
   private readonly markdown: MarkdownAdapter;
   private readonly sender: SerialSender;
   private readonly slots: SlotAllocator;
-  private readonly throttleMs: number;
+  private throttleMs: number;
   private readonly inputMode: 'append' | 'replace';
   private readonly settleStream?: (openid: string) => Promise<void>;
   private readonly logger: Logger;
@@ -418,6 +418,12 @@ export class QqStreamManager implements StreamManager {
     this.inputMode = options.inputMode ?? 'append';
     this.settleStream = options.settleStream;
     this.logger = options.logger ?? createLogger('qq-stream');
+  }
+
+  updateThrottle(throttleMs?: number): void {
+    if (throttleMs !== undefined) {
+      this.throttleMs = throttleMs;
+    }
   }
 
   /** 为一条出站目标开路；该 openid 已有活跃流时返回 null（调用方应走普通消息） */
