@@ -163,6 +163,17 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
     forceUpdate();
   };
 
+  const draft = model.getDraft();
+  const isDirty = model.isDirty();
+  const isSecretConfigured = Boolean(
+    props.hasSecret ||
+      (draft.app_secret && draft.app_secret.length > 0) ||
+      model.isOverridden('app_secret')
+  );
+  const secretPlaceholder = isSecretConfigured
+    ? F.appSecret.configuredPlaceholder
+    : F.appSecret.placeholder;
+
   const handleSave = async () => {
     if (!props.onSaveSettings) return;
     savingRef.current = true;
@@ -173,7 +184,15 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
       await model.save({
         saveSettings: (values, options) => {
           if (!props.onSaveSettings) return Promise.resolve();
-          return props.onSaveSettings(values, options, model.getResetFields());
+          const cleanValues = { ...values };
+          if (
+            isSecretConfigured &&
+            (!cleanValues.app_secret || cleanValues.app_secret === '') &&
+            !model.getResetFields().has('app_secret')
+          ) {
+            delete cleanValues.app_secret;
+          }
+          return props.onSaveSettings(cleanValues, options, model.getResetFields());
         },
       });
       forceUpdate();
@@ -189,8 +208,6 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
     }
   };
 
-  const draft = model.getDraft();
-  const isDirty = model.isDirty();
   const blocked = !isDirty || saving;
 
   const controller: CardController = {
@@ -312,10 +329,11 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
               id="qqbot-app-secret"
               label={F.appSecret.label}
               hint={F.appSecret.hint}
+              placeholder={secretPlaceholder}
               type="password"
               value={draft.app_secret || ''}
               disabled={saving}
-              overridden={model.isOverridden('app_secret')}
+              overridden={isSecretConfigured}
               onReset={() => handleResetField('app_secret')}
               onChange={(val) => handleFieldChange('app_secret', val)}
             />

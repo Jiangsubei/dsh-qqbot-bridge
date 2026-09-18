@@ -324,6 +324,8 @@ export const zhCN = {
       appSecret: {
         label: 'AppSecret',
         hint: '建议留空：生产环境使用 .credentials.yaml 中的凭据，避免明文写入设置。',
+        placeholder: '请输入 QQ 机器人 AppSecret',
+        configuredPlaceholder: '已配置，重新输入以替换 Secret',
       },
       defaultWorkspace: {
         label: '默认工作区',

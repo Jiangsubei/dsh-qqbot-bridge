@@ -618,4 +618,73 @@ describe('契约测试: 设置卡片保存桥接 buildSettingsBridge（settingsS
       expect(model.isOverridden('stream_throttle_ms')).toBe(true);
     });
   });
+
+  describe('4. Secret 字段安全回显与防误清空保护', () => {
+    it('hasSecret 精准匹配 row.secrets 中针对 app_secret 的项', () => {
+      // 1. row.secrets 中 app_secret 为 set: true
+      const ctx1 = {
+        settingsScope: {
+          describe: () => ({
+            getSnapshot: () => ({
+              view: {
+                namespaces: [
+                  {
+                    ns,
+                    secrets: [{ path: ['app_secret'], set: true }],
+                    value: { app_id: '102' },
+                  },
+                ],
+              },
+            }),
+          }),
+        },
+      };
+      expect(buildSettingsBridge(ctx1, ns).hasSecret).toBe(true);
+
+      // 2. row.secrets 中 app_secret 为 set: false
+      const ctx2 = {
+        settingsScope: {
+          describe: () => ({
+            getSnapshot: () => ({
+              view: {
+                namespaces: [
+                  {
+                    ns,
+                    secrets: [{ path: ['app_secret'], set: false }],
+                    value: { app_id: '102' },
+                  },
+                ],
+              },
+            }),
+          }),
+        },
+      };
+      expect(buildSettingsBridge(ctx2, ns).hasSecret).toBe(false);
+
+      // 3. row.value 或 row.user 直接含有明文 app_secret
+      const ctx3 = {
+        settingsScope: {
+          describe: () => ({
+            getSnapshot: () => ({
+              view: {
+                namespaces: [
+                  {
+                    ns,
+                    value: { app_id: '102', app_secret: 'raw-secret' },
+                  },
+                ],
+              },
+            }),
+          }),
+        },
+      };
+      expect(buildSettingsBridge(ctx3, ns).hasSecret).toBe(true);
+    });
+
+    it('文案表定义已对齐需求：configuredPlaceholder 逐字匹配「已配置，重新输入以替换 Secret」', () => {
+      expect(zhCN.settings.fields.appSecret.configuredPlaceholder).toBe(
+        '已配置，重新输入以替换 Secret'
+      );
+    });
+  });
 });

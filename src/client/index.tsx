@@ -48,7 +48,13 @@ export function buildSettingsBridge(ctx: any, namespace: string = SETTINGS_NAMES
     },
     get hasSecret() {
       const row = readNamespace();
-      return Array.isArray(row?.secrets) && row.secrets.length > 0;
+      if (Array.isArray(row?.secrets)) {
+        const secretItem = row.secrets.find((s: any) =>
+          Array.isArray(s.path) ? s.path.includes('app_secret') : s.path === 'app_secret'
+        );
+        if (secretItem) return Boolean(secretItem.set);
+      }
+      return Boolean(row?.value?.app_secret || row?.user?.app_secret);
     },
     onSaveSettings: async (
       values: Record<string, unknown>,

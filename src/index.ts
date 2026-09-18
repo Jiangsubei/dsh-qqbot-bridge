@@ -499,9 +499,16 @@ export async function wire(
 
   // ── 读取动态合并配置 ──
   const readSettings = (): PluginConfig => {
-    if (configSource) return configSource() ?? {};
+    let cfg: PluginConfig = {};
+    if (configSource) {
+      cfg = { ...cfg, ...(configSource() ?? {}) };
+    }
     const settingsService = optionalService<any>(ctx, 'settings');
-    return settingsService?.get?.(SETTINGS_NAMESPACE) ?? {};
+    const directCfg = settingsService?.get?.(SETTINGS_NAMESPACE);
+    if (directCfg) {
+      cfg = { ...cfg, ...directCfg };
+    }
+    return cfg;
   };
 
   const currentConfig = (): PluginConfig => ({
@@ -553,7 +560,9 @@ export async function wire(
             sessionActivity,
             logger,
           );
-          await activeWiring.client.start();
+          await activeWiring.client.start().catch((err: unknown) => {
+            logger.error('启动 QQ 客户端失败：', err);
+          });
           logger.info('QQ 机器人桥接热上线成功');
         } catch (err) {
           logger.error('QQ 机器人桥接热上线失败：', err);
@@ -591,7 +600,9 @@ export async function wire(
           sessionActivity,
           logger,
         );
-        await activeWiring.client.start();
+        await activeWiring.client.start().catch((err: unknown) => {
+          logger.error('重启 QQ 客户端失败：', err);
+        });
         logger.info('QQ 机器人桥接重启成功');
       } catch (err) {
         logger.error('QQ 机器人桥接重启失败：', err);
@@ -604,18 +615,20 @@ export async function wire(
   };
 
   let reconcileRunning = false;
+  let hasPendingReconcile = false;
   let pendingConfig: PluginConfig | undefined = undefined;
 
   const queueReconcile = async (newVal?: PluginConfig): Promise<void> => {
     if (newVal) pendingConfig = newVal;
+    hasPendingReconcile = true;
     if (reconcileRunning) return;
     reconcileRunning = true;
     try {
-      while (pendingConfig !== undefined || (!activeWiring && !isInitializing)) {
+      while (hasPendingReconcile) {
+        hasPendingReconcile = false;
         const nextCfg = pendingConfig;
         pendingConfig = undefined;
         await reconcile(nextCfg);
-        if (pendingConfig === undefined) break;
       }
     } finally {
       reconcileRunning = false;
@@ -638,6 +651,21 @@ export async function wire(
         logger.info('配置已更新，正在对齐运行状态...');
         void queueReconcile(newVal);
       },
+    });
+
+    (ctx as any).on('settings/updated', (ns: string, next: any) => {
+      if (isInitializing) return;
+      if (!ns || ns === SETTINGS_NAMESPACE) {
+        logger.info('收到 settings/updated 事件，正在对齐运行状态...');
+        void queueReconcile(next);
+      }
+    });
+    (ctx as any).on('settings/document-updated', (ns: string) => {
+      if (isInitializing) return;
+      if (!ns || ns === SETTINGS_NAMESPACE) {
+        logger.info('收到 settings/document-updated 事件，正在对齐运行状态...');
+        void queueReconcile();
+      }
     });
   };
 
