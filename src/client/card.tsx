@@ -26,6 +26,7 @@ import { ValueField, SwitchField } from './fields.js';
 import { cardStyle, sectionStyle, injectCardStyles } from './card-styles.js';
 import type { PluginConfig } from '../types/index.js';
 import {
+  DEFAULT_BASE_CONFIG,
   LIST_PAGE_SIZE,
   QQ_MEDIA_DEFAULT_DIR,
   QQ_MEDIA_HARD_LIMIT,
@@ -33,6 +34,8 @@ import {
   REPLY_MAX_CHARS,
 } from '../constants/index.js';
 import { t, zhCN } from '../i18n/index.js';
+
+export { DEFAULT_BASE_CONFIG };
 
 export type SettingsTabId = 'connection' | 'behavior' | 'files' | 'commands';
 
@@ -85,28 +88,6 @@ export interface CardProps {
     resetFields?: ReadonlySet<string>
   ) => Promise<{ revision?: number } | void>;
 }
-
-/**
- * 与 `src/config/schema.ts` 的 `.default(...)` 一一对齐（**不得**在此另立默认值）。
- *
- * D51 修正：`media_dir` 基线原先硬编码 `.dsh/qqbot/media`，与 schema 默认（相对 DSH_HOME 的
- * `qqbot/media`）不一致 ⇒ 卡片未设置时显示的值、以及「重置」写回的值都不是插件真实落点。
- * 现统一引用 `QQ_MEDIA_DEFAULT_DIR`；本对象同时**导出**，由契约测试逐字段与 schema 解析出的
- * 默认值比对（`client-settings.test.ts`），防止同类漂移再次发生。
- */
-export const DEFAULT_BASE_CONFIG: Partial<PluginConfig> = {
-  app_id: '',
-  app_secret: '',
-  default_workspace: '',
-  stream_enabled: true,
-  stream_throttle_ms: QQ_STREAM_THROTTLE_MS,
-  allow_create_session: true,
-  media_dir: QQ_MEDIA_DEFAULT_DIR,
-  media_max_bytes: QQ_MEDIA_HARD_LIMIT,
-  reply_max_chars: REPLY_MAX_CHARS,
-  list_page_size: LIST_PAGE_SIZE,
-  status_show_usage: true,
-};
 
 export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
   injectCardStyles();
@@ -162,6 +143,50 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
     setRerenderKey((k) => k + 1);
   }, []);
 
+  const isExternalControlled = Boolean(
+    (props.initialConfig && Object.keys(props.initialConfig).length > 0) ||
+      props.onSaveSettings
+  );
+
+  const [remoteLoaded, setRemoteLoaded] = useState(false);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [remoteLoadError, setRemoteLoadError] = useState<string | null>(null);
+  const [remoteHasSecret, setRemoteHasSecret] = useState(false);
+
+  const loadRemoteConfig = useCallback(async () => {
+    setRemoteLoading(true);
+    setRemoteLoadError(null);
+    try {
+      const res = await fetch('/plugins/dsh-qqbot-bridge/config');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data?.ok) {
+        if (data.config) {
+          model.setInitialValues(data.config);
+        }
+        if (data.baseDefaults) {
+          model.setBaseDefaults(data.baseDefaults);
+        }
+        setRemoteHasSecret(Boolean(data.hasSecret));
+        setRemoteLoaded(true);
+        forceUpdate();
+      } else {
+        throw new Error(data?.error || 'Failed to load configuration');
+      }
+    } catch (err: any) {
+      console.warn('[dsh-qqbot-bridge] Failed to fetch remote config:', err);
+      setRemoteLoadError(err?.message || '加载配置失败');
+    } finally {
+      setRemoteLoading(false);
+    }
+  }, [model, forceUpdate]);
+
+  useEffect(() => {
+    if (!isExternalControlled && !remoteLoaded) {
+      void loadRemoteConfig();
+    }
+  }, [isExternalControlled, remoteLoaded, loadRemoteConfig]);
+
   const handleTabClick = (tabId: SettingsTabId) => {
     activeTabRef.current = tabId;
     setActiveTabState(tabId);
@@ -190,6 +215,7 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
   const isDirty = model.isDirty();
   const isSecretConfigured = Boolean(
     props.hasSecret ||
+      remoteHasSecret ||
       (draft.app_secret && draft.app_secret.length > 0) ||
       model.isOverridden('app_secret')
   );
@@ -198,15 +224,13 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
     : F.appSecret.placeholder;
 
   const handleSave = async () => {
-    if (!props.onSaveSettings) return;
     savingRef.current = true;
     setSaving(true);
     updateError(null);
 
     try {
       await model.save({
-        saveSettings: (values, options) => {
-          if (!props.onSaveSettings) return Promise.resolve();
+        saveSettings: async (values, options) => {
           const cleanValues = { ...values };
           if (
             isSecretConfigured &&
@@ -215,7 +239,24 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
           ) {
             delete cleanValues.app_secret;
           }
-          return props.onSaveSettings(cleanValues, options, model.getResetFields());
+
+          if (props.onSaveSettings) {
+            return props.onSaveSettings(cleanValues, options, model.getResetFields());
+          }
+
+          // 自驱动 REST 保存
+          const res = await fetch('/plugins/dsh-qqbot-bridge/config', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(cleanValues),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            throw new Error(data?.error || `HTTP ${res.status}`);
+          }
+          if (data.hasSecret !== undefined) {
+            setRemoteHasSecret(Boolean(data.hasSecret));
+          }
         },
       });
       forceUpdate();
@@ -279,6 +320,17 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
 
   const formContent = (
     <>
+      {remoteLoading && !remoteLoaded && (
+        <div style={{ padding: '8px 12px', marginBottom: '12px', color: '#888', fontSize: '13px' }}>
+          正在从服务端加载配置...
+        </div>
+      )}
+      {remoteLoadError && !remoteLoaded && (
+        <div style={{ padding: '10px 14px', marginBottom: '12px', background: 'rgba(255, 107, 107, 0.1)', border: '1px solid rgba(255, 107, 107, 0.3)', borderRadius: '6px', color: '#ff6b6b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>加载配置失败: {remoteLoadError}</span>
+          <button type="button" onClick={() => void loadRemoteConfig()} style={{ background: 'transparent', border: '1px solid #ff6b6b', color: '#ff6b6b', borderRadius: '4px', padding: '2px 8px', cursor: 'pointer' }}>重试</button>
+        </div>
+      )}
       <div className={cardStyle.tabBar} role="tablist" aria-label={t('settings.card.tabsLabel')}>
             {SETTINGS_TABS.map((tab) => {
               const isSelected = activeTab === tab.id;

@@ -8,7 +8,7 @@ import { QqbotSettingsSection, QqbotSettingsCard } from './card.js';
 import { SETTINGS_NAMESPACE } from '../constants/index.js';
 import { t } from '../i18n/index.js';
 
-export const name = 'dsh-qqbot-bridge/client';
+export const name = 'dsh-qqbot-bridge';
 export const inject = ['slots'];
 
 const EMPTY_CONFIG: Record<string, unknown> = Object.freeze({});
@@ -245,7 +245,7 @@ export function apply(ctx: any) {
         order: 55,
         label: () => t('settings.section.title'),
         locale: SETTINGS_NAMESPACE,
-        inject: () => buildSettingsBridge(ctx, SETTINGS_NAMESPACE),
+        inject: () => ({}),
       },
       QqbotSettingsSection
     );

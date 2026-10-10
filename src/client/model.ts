@@ -38,6 +38,16 @@ export class QqbotFormModel {
     this.revision = revision;
   }
 
+  setInitialValues(values: Partial<PluginConfig>) {
+    this.initialValues = { ...values };
+    this.draft = { ...values };
+    this.resetFields.clear();
+  }
+
+  setBaseDefaults(defaults: Partial<PluginConfig>) {
+    this.baseDefaults = { ...defaults };
+  }
+
   getRevision(): number {
     return this.revision;
   }

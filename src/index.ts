@@ -26,6 +26,7 @@ import { PLUGIN_NAME, QQ_MSG_TYPE_TEXT } from './constants/index.js';
 import { PluginConfigSchema } from './config/schema.js';
 import { resolveCredentials, resolveDshHome } from './config/credentials.js';
 import { migrateLegacyConfig, readLegacyConfig } from './config/migrate.js';
+import { registerConfigRoute } from './server/routes.js';
 import { resolveLogger, type Logger } from './utils/logger.js';
 import { QqClient } from './qq/client.js';
 import { QqMarkdownAdapter } from './qq/markdown.js';
@@ -704,6 +705,9 @@ export async function wire(
     options.onReconcileReady(queueReconcile);
   }
 
+  // ── 注册服务端设置 REST API 路由 ──
+  const unregisterConfigRoute = registerConfigRoute(ctx, currentConfig, queueReconcile);
+
   // ── 初次尝试组装运行链路 ──
   const initialCfg = currentConfig();
   const { credential, reason } = resolveCredentials(initialCfg, { dshHome });
@@ -734,6 +738,11 @@ export async function wire(
   const rootDispose = async (): Promise<void> => {
     if (isRootDisposed) return;
     isRootDisposed = true;
+    try {
+      unregisterConfigRoute();
+    } catch {
+      // ignore
+    }
     if (activeWiring) {
       const w = activeWiring;
       activeWiring = undefined;

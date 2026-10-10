@@ -120,3 +120,20 @@ export const QQ_WS_BACKOFF_MS = [2000, 5000, 10000, 30000, 60000] as const;
 
 /** 分片上传完成后的 file_info 缓存安全边界（TTL 减 60s） */
 export const QQ_FILE_INFO_TTL_SAFETY_MS = 60_000;
+
+// ───────────────────────── 设置默认基线 ─────────────────────────
+
+/** 设置卡片与配置的基线默认值（集中唯一定义，各端共享） */
+export const DEFAULT_BASE_CONFIG: Record<string, unknown> = {
+  app_id: '',
+  app_secret: '',
+  default_workspace: '',
+  stream_enabled: true,
+  stream_throttle_ms: QQ_STREAM_THROTTLE_MS,
+  allow_create_session: true,
+  media_dir: QQ_MEDIA_DEFAULT_DIR,
+  media_max_bytes: QQ_MEDIA_HARD_LIMIT,
+  reply_max_chars: REPLY_MAX_CHARS,
+  list_page_size: LIST_PAGE_SIZE,
+  status_show_usage: true,
+};
