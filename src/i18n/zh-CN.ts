@@ -288,6 +288,10 @@ export const zhCN = {
 
   // ─────────────────────── Web UI 设置卡片 ───────────────────────
   settings: {
+    section: {
+      title: 'QQ 机器人',
+      description: '配置 QQ 官方机器人连接凭据、流式传输、多媒体存储及命令参数',
+    },
     tabs: {
       connection: '连接',
       behavior: '行为',

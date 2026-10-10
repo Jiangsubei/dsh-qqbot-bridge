@@ -9,7 +9,7 @@ import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { IconChevronDownOutlineMedium } from '@deepseek-ai/dsh-client-ui-primitives';
 import { QqbotFormModel, SettingsConflictError } from './model.js';
 import { ValueField, SwitchField } from './fields.js';
-import { cardStyle, injectCardStyles } from './card-styles.js';
+import { cardStyle, sectionStyle, injectCardStyles } from './card-styles.js';
 import type { PluginConfig } from '../types/index.js';
 import {
   LIST_PAGE_SIZE,
@@ -53,6 +53,7 @@ export interface CardController {
 }
 
 export interface CardProps {
+  layoutMode?: 'card' | 'section';
   initialConfig?: Partial<PluginConfig>;
   hasSecret?: boolean;
   revision?: number;
@@ -95,7 +96,15 @@ export const DEFAULT_BASE_CONFIG: Partial<PluginConfig> = {
 
 export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
   injectCardStyles();
-  const [expanded, setExpanded] = useState(props.initialExpanded ?? false);
+  const isSection = props.layoutMode === 'section';
+  const [expandedState, setExpandedState] = useState(props.initialExpanded ?? false);
+  const expanded = isSection ? true : expandedState;
+  const setExpanded = useCallback(
+    (exp: boolean) => {
+      if (!isSection) setExpandedState(exp);
+    },
+    [isSection]
+  );
   const [activeTabState, setActiveTabState] = useState<SettingsTabId>(
     props.initialTab ?? 'connection'
   );
@@ -254,33 +263,9 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
   const tabPanelStyle = (tab: SettingsTabId) =>
     activeTab !== tab ? { display: 'none' } : undefined;
 
-  return (
-    <div
-      className={[cardStyle.card, expanded ? cardStyle.cardOpen : ''].filter(Boolean).join(' ')}
-      data-testid="qqbot-bridge-card"
-    >
-      <button
-        type="button"
-        className={cardStyle.header}
-        aria-expanded={expanded}
-        aria-label={`${expanded ? t('settings.card.collapse') : t('settings.card.expand')}: ${zhCN.plugin.name}`}
-        onClick={() => setExpanded(!expanded)}
-      >
-        <span className={cardStyle.headText}>
-          <span className={cardStyle.name}>{zhCN.plugin.name}</span>
-          <span className={cardStyle.description}>{zhCN.plugin.description}</span>
-        </span>
-        {isDirty && <span className={cardStyle.badgePending}>{t('settings.card.dirty')}</span>}
-        <IconChevronDownOutlineMedium
-          className={[cardStyle.chevron, expanded ? cardStyle.chevronOpen : '']
-            .filter(Boolean)
-            .join(' ')}
-        />
-      </button>
-
-      {expanded && (
-        <div className={cardStyle.body}>
-          <div className={cardStyle.tabBar} role="tablist" aria-label={t('settings.card.tabsLabel')}>
+  const formContent = (
+    <>
+      <div className={cardStyle.tabBar} role="tablist" aria-label={t('settings.card.tabsLabel')}>
             {SETTINGS_TABS.map((tab) => {
               const isSelected = activeTab === tab.id;
               return (
@@ -525,8 +510,60 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
               {saving ? t('settings.card.saving') : t('settings.card.save')}
             </button>
           </div>
+    </>
+  );
+
+  if (isSection) {
+    return (
+      <div className={sectionStyle.section} data-testid="qqbot-bridge-section">
+        <div className={sectionStyle.head}>
+          <div className={sectionStyle.titleRow}>
+            <h2 className={sectionStyle.title}>{t('settings.section.title')}</h2>
+            {isDirty && <span className={sectionStyle.badgePending}>{t('settings.card.dirty')}</span>}
+          </div>
+          <p className={sectionStyle.description}>{t('settings.section.description')}</p>
+        </div>
+
+        <div className={sectionStyle.body}>
+          {formContent}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={[cardStyle.card, expanded ? cardStyle.cardOpen : ''].filter(Boolean).join(' ')}
+      data-testid="qqbot-bridge-card"
+    >
+      <button
+        type="button"
+        className={cardStyle.header}
+        aria-expanded={expanded}
+        aria-label={`${expanded ? t('settings.card.collapse') : t('settings.card.expand')}: ${zhCN.plugin.name}`}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span className={cardStyle.headText}>
+          <span className={cardStyle.name}>{zhCN.plugin.name}</span>
+          <span className={cardStyle.description}>{zhCN.plugin.description}</span>
+        </span>
+        {isDirty && <span className={cardStyle.badgePending}>{t('settings.card.dirty')}</span>}
+        <IconChevronDownOutlineMedium
+          className={[cardStyle.chevron, expanded ? cardStyle.chevronOpen : '']
+            .filter(Boolean)
+            .join(' ')}
+        />
+      </button>
+
+      {expanded && (
+        <div className={cardStyle.body}>
+          {formContent}
         </div>
       )}
     </div>
   );
+}
+
+export function QqbotSettingsSection(props: CardProps): React.JSX.Element {
+  return <QqbotSettingsCard {...props} layoutMode="section" initialExpanded={true} />;
 }

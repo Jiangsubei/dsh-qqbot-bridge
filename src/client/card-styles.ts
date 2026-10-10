@@ -55,6 +55,12 @@ const QQBOT_CARD_CSS = `
 .qqbot_tab:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-1px}
 .qqbot_tabPanel{display:flex;flex-direction:column}
 .qqbot_tabPanelHidden{display:none !important}
+.qqbot_section{display:flex;flex-direction:column;width:100%;height:100%;padding:20px 24px;box-sizing:border-box}
+.qqbot_sectionHead{margin-bottom:16px;display:flex;flex-direction:column;gap:6px}
+.qqbot_sectionTitleRow{display:flex;align-items:center;gap:12px}
+.qqbot_sectionTitle{color:var(--dsw-alias-label-primary);font-size:20px;font-weight:600;line-height:1.4;margin:0}
+.qqbot_sectionDescription{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5;margin:0}
+.qqbot_sectionBody{display:flex;flex-direction:column;flex:1}
 `;
 
 export function injectCardStyles(): void {
@@ -66,6 +72,25 @@ export function injectCardStyles(): void {
   tag.textContent = QQBOT_CARD_CSS;
   document.head.appendChild(tag);
 }
+
+export const sectionStyle = {
+  section: 'qqbot_section',
+  head: 'qqbot_sectionHead',
+  titleRow: 'qqbot_sectionTitleRow',
+  title: 'qqbot_sectionTitle',
+  description: 'qqbot_sectionDescription',
+  body: 'qqbot_sectionBody',
+  tabBar: 'qqbot_tabBar',
+  tab: 'qqbot_tab',
+  tabActive: 'qqbot_tabActive',
+  tabPanel: 'qqbot_tabPanel',
+  tabPanelHidden: 'qqbot_tabPanelHidden',
+  footer: 'qqbot_footer',
+  failed: 'qqbot_failed',
+  discard: 'qqbot_discard',
+  save: 'qqbot_save',
+  badgePending: 'qqbot_badgePending',
+};
 
 export const cardStyle = {
   card: 'qqbot_card',

@@ -4,7 +4,8 @@
  * 客户端 WebUI 插件入口：向 DSH Settings 面板注册设置卡片与插槽绑定。
  */
 
-import { QqbotSettingsCard } from './card.js';
+import React from 'react';
+import { QqbotSettingsSection, QqbotSettingsCard } from './card.js';
 import { SETTINGS_NAMESPACE } from '../constants/index.js';
 import { t } from '../i18n/index.js';
 
@@ -214,27 +215,20 @@ export function buildSettingsBridge(ctx: any, namespace: string = SETTINGS_NAMES
 export function apply(ctx: any) {
   if (!ctx?.slots?.inject) return;
 
-  const registerItem = (slotName: string) =>
-    ctx.slots.register(
+  // 对齐 DSH Market 规范：注册独立设置板块到设置弹窗侧边栏
+  ctx.slots.inject('settings.section', () => {
+    return ctx.slots.register(
       {
-        name: slotName,
-        id: 'dsh-qqbot-bridge',
-        key: 'dsh-qqbot-bridge',
-        order: 50,
+        name: 'settings.section',
+        id: 'qqbot',
+        order: 55,
+        label: () => t('settings.section.title'),
+        locale: SETTINGS_NAMESPACE,
         inject: () => buildSettingsBridge(ctx, SETTINGS_NAMESPACE),
       },
-      QqbotSettingsCard
+      (ownerProps: any) => React.createElement(QqbotSettingsSection, ownerProps)
     );
-
-  // 1. DSH 0.2.0 官方插件设置项插槽 (Plugins page)
-  ctx.slots.inject('plugins.item', function* () {
-    yield registerItem('plugins.item');
-  });
-
-  // 2. 兼容早期设置插件插槽 (Settings plugin item)
-  ctx.slots.inject('settings.plugin.item', function* () {
-    yield registerItem('settings.plugin.item');
   });
 }
 
-export { QqbotSettingsCard };
+export { QqbotSettingsSection, QqbotSettingsCard };

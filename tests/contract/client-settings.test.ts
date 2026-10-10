@@ -5,7 +5,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   IconChevronDownOutline14: () => null,
 }));
 
-import { buildSettingsBridge } from '../../src/client/index.js';
+import { buildSettingsBridge, apply } from '../../src/client/index.js';
 import { DEFAULT_BASE_CONFIG, SETTINGS_TABS } from '../../src/client/card.js';
 import { QqbotFormModel } from '../../src/client/model.js';
 import { PluginConfigSchema } from '../../src/config/schema.js';
@@ -686,6 +686,46 @@ describe('契约测试: 设置卡片保存桥接 buildSettingsBridge（settingsS
       expect(zhCN.settings.fields.appSecret.configuredPlaceholder).toBe(
         '已配置，重新输入以替换 Secret'
       );
+    });
+  });
+
+  describe('5. DSH Market 原生对齐设置侧边栏插槽装配（settings.section）', () => {
+    it('纯粹注册 settings.section，拒绝双兜底（plugins.item / settings.plugin.item）', () => {
+      const injectedSlots: string[] = [];
+      const registeredItems: any[] = [];
+
+      const mockCtx = {
+        slots: {
+          inject: vi.fn((slotName: string, cb: () => void) => {
+            injectedSlots.push(slotName);
+            cb();
+          }),
+          register: vi.fn((meta: any, component: any) => {
+            registeredItems.push({ meta, component });
+            return () => {};
+          }),
+        },
+      };
+
+      apply(mockCtx);
+
+      // 1. 唯一注入 settings.section
+      expect(injectedSlots).toEqual(['settings.section']);
+      expect(mockCtx.slots.inject).toHaveBeenCalledTimes(1);
+
+      // 2. 注册元数据完全对齐规范
+      expect(registeredItems).toHaveLength(1);
+      const item = registeredItems[0];
+      expect(item.meta.name).toBe('settings.section');
+      expect(item.meta.id).toBe('qqbot');
+      expect(item.meta.order).toBe(55);
+      expect(item.meta.locale).toBe(ns);
+      expect(typeof item.meta.label).toBe('function');
+      expect(item.meta.label()).toBe(zhCN.settings.section.title);
+      expect(typeof item.meta.inject).toBe('function');
+
+      // 3. 验证组件工厂为函数
+      expect(typeof item.component).toBe('function');
     });
   });
 });
