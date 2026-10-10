@@ -9,7 +9,7 @@ import { SETTINGS_NAMESPACE } from '../constants/index.js';
 import { t } from '../i18n/index.js';
 
 export const name = 'dsh-qqbot-bridge/client';
-export const inject = ['slots', 'settingsScope'];
+export const inject = ['slots'];
 
 const EMPTY_CONFIG: Record<string, unknown> = Object.freeze({});
 
@@ -17,8 +17,8 @@ const EMPTY_CONFIG: Record<string, unknown> = Object.freeze({});
  * Build the card props bridge for one settings namespace.
  */
 export function buildSettingsBridge(ctx: any, namespace: string = SETTINGS_NAMESPACE) {
-  const describe = ctx.settingsScope?.describe?.() ?? null;
-  const scope = ctx.settingsScope?.bind?.({ namespace }) ?? null;
+  const describe = ctx.configForms?.describe?.() ?? ctx.settingsScope?.describe?.() ?? null;
+  const scope = ctx.configForms?.get?.(namespace) ?? ctx.settingsScope?.bind?.({ namespace }) ?? null;
 
   const readNamespace = () => {
     const describeSnap =
@@ -66,7 +66,11 @@ export function buildSettingsBridge(ctx: any, namespace: string = SETTINGS_NAMES
       options: { expectedRevision: number },
       resetFields?: ReadonlySet<string>
     ) => {
-      const targetScope = scope ?? ctx.settingsScope?.bind?.({ namespace }) ?? ctx.settingsScope;
+      const targetScope =
+        scope ??
+        ctx.configForms?.get?.(namespace) ??
+        ctx.settingsScope?.bind?.({ namespace }) ??
+        ctx.settingsScope;
       if (!targetScope?.mutate) throw new Error(t('settings.errors.unavailable'));
 
       const resets = resetFields ?? new Set<string>();
@@ -210,17 +214,26 @@ export function buildSettingsBridge(ctx: any, namespace: string = SETTINGS_NAMES
 export function apply(ctx: any) {
   if (!ctx?.slots?.inject) return;
 
-  // 注册本插件设置卡片（key = 插件 id）
-  ctx.slots.inject('settings.plugin.item', function* () {
-    yield ctx.slots.register(
+  const registerItem = (slotName: string) =>
+    ctx.slots.register(
       {
-        name: 'settings.plugin.item',
+        name: slotName,
         id: 'dsh-qqbot-bridge',
         key: 'dsh-qqbot-bridge',
+        order: 50,
         inject: () => buildSettingsBridge(ctx, SETTINGS_NAMESPACE),
       },
       QqbotSettingsCard
     );
+
+  // 1. DSH 0.2.0 官方插件设置项插槽 (Plugins page)
+  ctx.slots.inject('plugins.item', function* () {
+    yield registerItem('plugins.item');
+  });
+
+  // 2. 兼容早期设置插件插槽 (Settings plugin item)
+  ctx.slots.inject('settings.plugin.item', function* () {
+    yield registerItem('settings.plugin.item');
   });
 }
 
