@@ -25,7 +25,7 @@ import { Context } from '@deepseek-ai/cordis';
 import { PLUGIN_NAME, QQ_MSG_TYPE_TEXT } from './constants/index.js';
 import { PluginConfigSchema } from './config/schema.js';
 import { resolveCredentials, resolveDshHome } from './config/credentials.js';
-import { migrateLegacyConfig } from './config/migrate.js';
+import { migrateLegacyConfig, readLegacyConfig } from './config/migrate.js';
 import { resolveLogger, type Logger } from './utils/logger.js';
 import { QqClient } from './qq/client.js';
 import { QqMarkdownAdapter } from './qq/markdown.js';
@@ -554,7 +554,16 @@ export async function wire(
   };
 
   const currentConfig = (): PluginConfig => {
-    return mergeConfigs(readSettingsConfig(), extractConfig(config));
+    const fromSettings = readSettingsConfig();
+    const fromArgs = extractConfig(config);
+    const merged = mergeConfigs(fromSettings, fromArgs);
+    if (!merged.app_id) {
+      const legacy = readLegacyConfig(dshHome);
+      if (legacy) {
+        return mergeConfigs(legacy, merged);
+      }
+    }
+    return merged;
   };
 
   // ── 会话活跃元数据动态数据源 ──
@@ -696,7 +705,6 @@ export async function wire(
   }
 
   // ── 初次尝试组装运行链路 ──
-  await migrateLegacyConfig(ctx, currentConfig());
   const initialCfg = currentConfig();
   const { credential, reason } = resolveCredentials(initialCfg, { dshHome });
 
@@ -761,8 +769,10 @@ export async function wire(
  * Cordis 插件入口。`apply` 只做接线与生命周期登记（业务逻辑全在 `wire()` 装配的模块里）。
  */
 export async function apply(ctx: Context, config: PluginConfig = {}): Promise<void> {
-  // 1. 异步触发一次旧版配置静默迁移
-  void migrateLegacyConfig(ctx, config);
+  // 1. 在整个应用生命周期 ready 之后，安全异步触发旧版配置静默迁移（避免 boot 阶段与 Loader 重载发生死锁）
+  (ctx as any).on('ready', () => {
+    void migrateLegacyConfig(ctx, config);
+  });
 
   // 2. 注册 ctx.inject(['settings'], s => (s as any).settings?.configure?.({ auto: false }, ctx.fiber))，声明自定义卡片，避免自动生成多余表单
   ctx.inject(['settings'], (s) => (s as any).settings?.configure?.({ auto: false }, ctx.fiber));
