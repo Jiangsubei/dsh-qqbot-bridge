@@ -6,8 +6,22 @@
  */
 
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { IconChevronDownOutlineMedium } from '@deepseek-ai/dsh-client-ui-primitives';
+import * as DshPrimitives from '@deepseek-ai/dsh-client-ui-primitives';
 import { QqbotFormModel, SettingsConflictError } from './model.js';
+
+function resolveChevronDownIcon(): React.ComponentType<{ className?: string }> {
+  try {
+    const P = DshPrimitives as any;
+    if (typeof P?.IconChevronDownOutlineMedium === 'function') return P.IconChevronDownOutlineMedium;
+    if (typeof P?.IconChevronDownOutlineRegular === 'function') return P.IconChevronDownOutlineRegular;
+    if (typeof P?.IconChevronDownOutline14 === 'function') return P.IconChevronDownOutline14;
+  } catch {
+    // ignore
+  }
+  return () => null;
+}
+
+const SafeIconChevronDown: React.ComponentType<{ className?: string }> = resolveChevronDownIcon();
 import { ValueField, SwitchField } from './fields.js';
 import { cardStyle, sectionStyle, injectCardStyles } from './card-styles.js';
 import type { PluginConfig } from '../types/index.js';
@@ -548,7 +562,7 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
           <span className={cardStyle.description}>{zhCN.plugin.description}</span>
         </span>
         {isDirty && <span className={cardStyle.badgePending}>{t('settings.card.dirty')}</span>}
-        <IconChevronDownOutlineMedium
+        <SafeIconChevronDown
           className={[cardStyle.chevron, expanded ? cardStyle.chevronOpen : '']
             .filter(Boolean)
             .join(' ')}
@@ -564,6 +578,44 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
   );
 }
 
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class SectionErrorBoundary extends React.Component<{ children: React.ReactNode }, ErrorBoundaryState> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('[dsh-qqbot-bridge] Section render error:', error, info);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: '24px', color: '#ff6b6b' }}>
+          <h3>QQ 机器人设置加载异常</h3>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: '12px' }}>
+            {this.state.error?.stack || this.state.error?.message || String(this.state.error)}
+          </pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export function QqbotSettingsSection(props: CardProps): React.JSX.Element {
-  return <QqbotSettingsCard {...props} layoutMode="section" initialExpanded={true} />;
+  return (
+    <SectionErrorBoundary>
+      <QqbotSettingsCard {...props} layoutMode="section" initialExpanded={true} />
+    </SectionErrorBoundary>
+  );
 }

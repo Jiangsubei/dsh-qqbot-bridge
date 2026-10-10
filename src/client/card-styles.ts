@@ -55,7 +55,7 @@ const QQBOT_CARD_CSS = `
 .qqbot_tab:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-1px}
 .qqbot_tabPanel{display:flex;flex-direction:column}
 .qqbot_tabPanelHidden{display:none !important}
-.qqbot_section{display:flex;flex-direction:column;width:100%;height:100%;padding:20px 24px;box-sizing:border-box}
+.qqbot_section{display:flex;flex-direction:column;width:100%;min-height:0;flex:1;padding:4px 0 24px;box-sizing:border-box}
 .qqbot_sectionHead{margin-bottom:16px;display:flex;flex-direction:column;gap:6px}
 .qqbot_sectionTitleRow{display:flex;align-items:center;gap:12px}
 .qqbot_sectionTitle{color:var(--dsw-alias-label-primary);font-size:20px;font-weight:600;line-height:1.4;margin:0}

@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 
 // card.tsx 从 DSH 平台 seed 引入图标；契约测试不加载真实 DSH 客户端运行时。
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
+  IconChevronDownOutlineMedium: () => null,
+  IconChevronDownOutlineRegular: () => null,
   IconChevronDownOutline14: () => null,
 }));
 

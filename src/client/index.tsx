@@ -4,7 +4,6 @@
  * 客户端 WebUI 插件入口：向 DSH Settings 面板注册设置卡片与插槽绑定。
  */
 
-import React from 'react';
 import { QqbotSettingsSection, QqbotSettingsCard } from './card.js';
 import { SETTINGS_NAMESPACE } from '../constants/index.js';
 import { t } from '../i18n/index.js';
@@ -25,8 +24,13 @@ export function buildSettingsBridge(ctx: any, namespace: string = SETTINGS_NAMES
     const describeSnap =
       typeof describe?.getSnapshot === 'function' ? describe.getSnapshot() : describe;
     const view = describeSnap?.view ?? describeSnap;
-    const namespaces = Array.isArray(view) ? view : view?.namespaces;
-    const row = namespaces?.find(
+    const rawNamespaces = Array.isArray(view) ? view : view?.namespaces;
+    const namespaces = Array.isArray(rawNamespaces)
+      ? rawNamespaces
+      : rawNamespaces && typeof rawNamespaces === 'object'
+        ? Object.entries(rawNamespaces).map(([k, v]: [string, any]) => ({ ns: k, ...(v || {}) }))
+        : [];
+    const row = namespaces.find(
       (n: any) => n?.ns === namespace || n?.id === namespace || n?.key === namespace
     );
     if (row) return row;
@@ -44,23 +48,40 @@ export function buildSettingsBridge(ctx: any, namespace: string = SETTINGS_NAMES
 
   return {
     get initialConfig() {
-      return readNamespace()?.value ?? EMPTY_CONFIG;
+      try {
+        return readNamespace()?.value ?? EMPTY_CONFIG;
+      } catch (err) {
+        console.warn('[dsh-qqbot-bridge] Failed to read initialConfig:', err);
+        return EMPTY_CONFIG;
+      }
     },
     get revision() {
-      return readNamespace()?.revision ?? 0;
+      try {
+        return readNamespace()?.revision ?? 0;
+      } catch {
+        return 0;
+      }
     },
     get baseDefaults() {
-      return readNamespace()?.base ?? EMPTY_CONFIG;
+      try {
+        return readNamespace()?.base ?? EMPTY_CONFIG;
+      } catch {
+        return EMPTY_CONFIG;
+      }
     },
     get hasSecret() {
-      const row = readNamespace();
-      if (Array.isArray(row?.secrets)) {
-        const secretItem = row.secrets.find((s: any) =>
-          Array.isArray(s.path) ? s.path.includes('app_secret') : s.path === 'app_secret'
-        );
-        if (secretItem) return Boolean(secretItem.set);
+      try {
+        const row = readNamespace();
+        if (Array.isArray(row?.secrets)) {
+          const secretItem = row.secrets.find((s: any) =>
+            Array.isArray(s.path) ? s.path.includes('app_secret') : s.path === 'app_secret'
+          );
+          if (secretItem) return Boolean(secretItem.set);
+        }
+        return Boolean(row?.value?.app_secret || row?.user?.app_secret);
+      } catch {
+        return false;
       }
-      return Boolean(row?.value?.app_secret || row?.user?.app_secret);
     },
     onSaveSettings: async (
       values: Record<string, unknown>,
@@ -226,7 +247,7 @@ export function apply(ctx: any) {
         locale: SETTINGS_NAMESPACE,
         inject: () => buildSettingsBridge(ctx, SETTINGS_NAMESPACE),
       },
-      (ownerProps: any) => React.createElement(QqbotSettingsSection, ownerProps)
+      QqbotSettingsSection
     );
   });
 }
