@@ -184,6 +184,10 @@ export function registerAgentTools(ctx: Context, options: QqAgentToolsOptions): 
     if (disposed || unregisters.length > 0) return true;
     const tools: QqToolsService | undefined = ctx.get('tools');
     if (!tools || typeof tools.register !== 'function') return false;
+    if (typeof (tools as any).get === 'function' && (tools as any).get('send_file') !== undefined) {
+      log.info('agent 工具已存在，跳过重复注册：send_file / send_image');
+      return true;
+    }
     unregisters.push(tools.register(createSendTool('file', options)));
     unregisters.push(tools.register(createSendTool('image', options)));
     log.info('已注册 agent 工具：send_file / send_image');

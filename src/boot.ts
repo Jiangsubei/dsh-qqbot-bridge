@@ -11,12 +11,12 @@ import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { Context } from '@deepseek-ai/cordis';
 import {
   boot,
-  loadOverlayPatches,
-  healProfilesModuleFallback,
-  resolveBundleDir,
+  readProfilePatches,
+  type ProfileContext,
 } from '@deepseek-ai/dsh-app-boot';
 
 const require = createRequire(import.meta.url);
@@ -69,11 +69,22 @@ export async function bootDshQqbotBridge(options: BootDshOptions = {}): Promise<
     );
   }
 
-  await healProfilesModuleFallback({ installAnchor, home: dshHome });
-
   // 2. 准备 profile 目录与 cordis.yml 根配置
   const profileDir = path.join(dshHome, 'profiles', TEST_PROFILE);
   await fsp.mkdir(profileDir, { recursive: true });
+
+  // 链接安装 node_modules 到 profileDir/node_modules，供 profile preset 解析包依赖
+  const profileNodeModules = path.join(profileDir, 'node_modules');
+  if (!fs.existsSync(profileNodeModules)) {
+    const dshNodeModules = path.resolve(path.dirname(installAnchor), '../..');
+    if (fs.existsSync(dshNodeModules)) {
+      try {
+        fs.symlinkSync(dshNodeModules, profileNodeModules, 'junction');
+      } catch {
+        // ignore
+      }
+    }
+  }
 
   const rootConfig = path.join(profileDir, 'cordis.yml');
   if (!fs.existsSync(rootConfig)) {
@@ -91,29 +102,21 @@ export async function bootDshQqbotBridge(options: BootDshOptions = {}): Promise<
     await fsp.writeFile(profilePackageJson, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
   }
 
-  // 3. 加载 @deepseek-ai/dsh-base 的 bundle patch
-  const baseDir = resolveBundleDir(TEST_PROFILE, '@deepseek-ai/dsh-base', installAnchor, profileDir);
-  const baseManifest = JSON.parse(await fsp.readFile(path.join(baseDir, 'package.json'), 'utf8'));
-  const declaredPatch = baseManifest.dsh?.bundle?.patch || 'cordis.patch.yml';
-  const basePatchPath = path.join(baseDir, declaredPatch);
-  const basePatches = loadOverlayPatches(TEST_PROFILE, basePatchPath);
+  // 准备 profile 的 cordis.patch.yml（声明 dsh-qqbot-bridge profile entry）
+  const patchPath = path.join(profileDir, 'cordis.patch.yml');
+  if (!fs.existsSync(patchPath)) {
+    const pluginEntry = path.resolve(process.cwd(), 'dist/index.js');
+    const pluginUrl = pathToFileURL(pluginEntry).href;
+    const initialPatch = `- insert:\n    - id: dsh-qqbot-bridge\n      name: ${JSON.stringify(pluginUrl)}\n`;
+    await fsp.writeFile(patchPath, initialPatch, 'utf8');
+  }
 
-  // 4. 组装 overlay patches
+  // 3. 组装 overlay patches
   const storagesDir = path.join(dshHome, 'storages');
   await fsp.mkdir(storagesDir, { recursive: true });
 
-  const configPath = options.configPath || path.join(dshHome, 'settings.yaml');
-
   const defaultOverlays: any[] = [
     { id: 'hmr', disabled: true },
-    {
-      id: 'settings',
-      config: {
-        path: configPath,
-        dshHome,
-        watch: false,
-      },
-    },
     {
       id: 'credentials',
       config: {
@@ -145,20 +148,41 @@ export async function bootDshQqbotBridge(options: BootDshOptions = {}): Promise<
     ...(options.extraPatches || []),
   ];
 
-  // 5. 调用 DSH 官方 boot()
-  const ctx = await boot('dsh-qqbot-bridge', rootConfig, [...basePatches, ...defaultOverlays], async (hostCtx) => {
-    if (options.prepare) {
-      await options.prepare(hostCtx);
-    }
-  });
+  // 4. 调用 DSH 官方 boot()
+  const bareModuleBaseUrl = pathToFileURL(installAnchor).href;
+  const profileContext: ProfileContext = {
+    name: TEST_PROFILE,
+    dir: profileDir,
+    patchPath,
+    installAnchor,
+    cwd: process.cwd(),
+    home: dshHome,
+    startedBundles: ['@deepseek-ai/dsh-base'],
+    overlays: defaultOverlays,
+    telemetryDisabledEnv: '1',
+  };
 
-  // 6. 按需挂载本插件（动态导入：P1 探针阶段 src/index.ts 尚不存在）
-  if (options.mountPlugin === true) {
-    // 用变量 specifier：P1 阶段 src/index.ts 尚未创建，字面量导入会让 tsc 编译期报 TS2307。
-    // P2 创建 src/index.ts 后，此处即可改回字面量导入以获得完整的静态检查。
-    const pluginEntry = './index.js';
-    const mod = await import(pluginEntry);
-    ctx.plugin(mod as any, options.config || {});
+  const patches = readProfilePatches('dsh', profileContext);
+
+  const ctx = await boot(
+    'dsh-qqbot-bridge',
+    rootConfig,
+    patches,
+    async (hostCtx) => {
+      hostCtx.provide('profileContext', profileContext);
+      if (options.prepare) {
+        await options.prepare(hostCtx);
+      }
+    },
+    bareModuleBaseUrl
+  );
+
+  // 5. 按需挂载本插件或配置
+  if (options.mountPlugin === true && options.config && Object.keys(options.config).length > 0) {
+    const settings = (ctx as any).settings ?? (ctx as any).get?.('settings');
+    if (settings?.update) {
+      await settings.update('dsh-qqbot-bridge', options.config);
+    }
   }
 
   const dispose = async () => {

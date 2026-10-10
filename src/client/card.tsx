@@ -6,7 +6,7 @@
  */
 
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives';
+import { IconChevronDownOutlineMedium } from '@deepseek-ai/dsh-client-ui-primitives';
 import { QqbotFormModel, SettingsConflictError } from './model.js';
 import { ValueField, SwitchField } from './fields.js';
 import { cardStyle, injectCardStyles } from './card-styles.js';
@@ -271,7 +271,7 @@ export function QqbotSettingsCard(props: CardProps): React.JSX.Element {
           <span className={cardStyle.description}>{zhCN.plugin.description}</span>
         </span>
         {isDirty && <span className={cardStyle.badgePending}>{t('settings.card.dirty')}</span>}
-        <IconChevronDownOutline14
+        <IconChevronDownOutlineMedium
           className={[cardStyle.chevron, expanded ? cardStyle.chevronOpen : '']
             .filter(Boolean)
             .join(' ')}

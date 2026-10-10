@@ -87,6 +87,13 @@ export interface OpenedTargetStore {
  * 调用方（`src/index.ts` 接线层 / 契约测试）负责在插件卸载时调用 `close()`。
  */
 export async function openTargetStore(ctx: { storageDomain: DomainFacility }): Promise<OpenedTargetStore> {
+  const existing = (ctx.storageDomain as any).get?.(controlTargetDomainSpec.name);
+  if (existing) {
+    return {
+      store: new DomainTargetStore(existing.table(CONTROL_TARGET_TABLE)),
+      close: () => Promise.resolve(),
+    };
+  }
   const domain: Domain<typeof controlTargetDomainSpec> = await ctx.storageDomain.open(controlTargetDomainSpec);
   return {
     store: new DomainTargetStore(domain.table(CONTROL_TARGET_TABLE)),

@@ -22,9 +22,10 @@ import * as os from 'node:os';
 
 import { Context } from '@deepseek-ai/cordis';
 
-import { PLUGIN_NAME, SETTINGS_NAMESPACE, QQ_MSG_TYPE_TEXT } from './constants/index.js';
+import { PLUGIN_NAME, QQ_MSG_TYPE_TEXT } from './constants/index.js';
 import { PluginConfigSchema } from './config/schema.js';
 import { resolveCredentials, resolveDshHome } from './config/credentials.js';
+import { migrateLegacyConfig } from './config/migrate.js';
 import { resolveLogger, type Logger } from './utils/logger.js';
 import { QqClient } from './qq/client.js';
 import { QqMarkdownAdapter } from './qq/markdown.js';
@@ -137,6 +138,8 @@ export interface QqBridgeWireOptions {
   createClient?: (options: { credentials: QqCredential; logger: Logger }) => QqClientLike;
   /** 是否注册 `ctx.on('ready')` 自动启动（契约测试置 false，避免真实网络） */
   autoStart?: boolean;
+  /** Reconciler 就绪回调（供 apply 绑定热更新） */
+  onReconcileReady?: (queueReconcile: (newVal?: PluginConfig) => Promise<void>) => void;
 }
 
 /** `wire()` 的接线结果，供装配契约测试逐项断言 */
@@ -452,7 +455,22 @@ async function createWiring(
     if (isWiringDisposed) return;
     isWiringDisposed = true;
     runDisposers(disposers);
-    client.stop();
+    if (typeof (interactions as any).clear === 'function') {
+      (interactions as any).clear();
+    }
+    if (typeof (client as any).disconnect === 'function') {
+      try {
+        await (client as any).disconnect();
+      } catch (err) {
+        logger.warn('client.disconnect 异常', err);
+      }
+    }
+    if (typeof client.stop === 'function') {
+      client.stop();
+    }
+    if (typeof (streams as any).dispose === 'function') {
+      await (streams as any).dispose().catch(() => undefined);
+    }
     await router.drain().catch(() => undefined);
     await opened.dispose().catch((err: unknown) => logger.error('释放控制层失败', err));
   };
@@ -480,7 +498,23 @@ async function createWiring(
 }
 
 /**
- * 完成全部接线。凭据缺失时返回 `undefined`（离线待机，插件仍挂载并注册设置面板）。
+ * 从 Volatile 包装或普通对象提取最新的扁平配置。
+ */
+function extractConfig(cfg: unknown): PluginConfig {
+  if (!cfg || typeof cfg !== 'object') return {};
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(cfg as Record<string, unknown>)) {
+    if (val && typeof val === 'object' && typeof (val as { get?: unknown }).get === 'function') {
+      out[key] = (val as { get: () => unknown }).get();
+    } else {
+      out[key] = val;
+    }
+  }
+  return out as PluginConfig;
+}
+
+/**
+ * 完成全部接线。凭据缺失时返回 `undefined`（离线待机，插件仍挂载）。
  * 内置 Reconciler 状态机，当设置面板更新凭据时自动热上线。
  */
 export async function wire(
@@ -492,29 +526,36 @@ export async function wire(
   const dshHome = resolveDshHome();
 
   let activeWiring: InternalWiring | undefined = undefined;
-  let configSource: (() => PluginConfig) | undefined = undefined;
-  let settingsInstalled = false;
   let isRootDisposed = false;
   let isInitializing = true;
 
   // ── 读取动态合并配置 ──
-  const readSettings = (): PluginConfig => {
-    let cfg: PluginConfig = {};
-    if (configSource) {
-      cfg = { ...cfg, ...(configSource() ?? {}) };
-    }
+  const readSettingsConfig = (): PluginConfig => {
     const settingsService = optionalService<any>(ctx, 'settings');
-    const directCfg = settingsService?.get?.(SETTINGS_NAMESPACE);
-    if (directCfg) {
-      cfg = { ...cfg, ...directCfg };
+    if (!settingsService?.describe) return {};
+    try {
+      const desc = settingsService.describe().find((d: any) => d.ns === 'dsh-qqbot-bridge' || d.id === 'dsh-qqbot-bridge');
+      return (desc?.value as PluginConfig) ?? {};
+    } catch {
+      return {};
     }
-    return cfg;
   };
 
-  const currentConfig = (): PluginConfig => ({
-    ...config,
-    ...readSettings(),
-  });
+  const mergeConfigs = (base: PluginConfig, overrides: PluginConfig): PluginConfig => {
+    const result: Record<string, unknown> = { ...base };
+    for (const [key, val] of Object.entries(overrides)) {
+      if (val !== undefined && val !== '') {
+        result[key] = val;
+      } else if (result[key] === undefined) {
+        result[key] = val;
+      }
+    }
+    return result as PluginConfig;
+  };
+
+  const currentConfig = (): PluginConfig => {
+    return mergeConfigs(readSettingsConfig(), extractConfig(config));
+  };
 
   // ── 会话活跃元数据动态数据源 ──
   let activitySource: ControlContext['sessionActivity'];
@@ -543,7 +584,9 @@ export async function wire(
   // ── Reconciler 状态机：配置变更时对齐运行状态 ──
   const reconcile = async (forcedConfig?: PluginConfig): Promise<void> => {
     if (isRootDisposed) return;
-    const latestConfig = forcedConfig ? { ...config, ...forcedConfig } : currentConfig();
+    const latestConfig = forcedConfig
+      ? { ...currentConfig(), ...extractConfig(forcedConfig) }
+      : currentConfig();
     const { credential: newCred } = resolveCredentials(latestConfig, { dshHome });
 
     if (!activeWiring) {
@@ -635,50 +678,25 @@ export async function wire(
     }
   };
 
-  // ── 设置面板注册（消除 Fiber 调度导致的离线死锁） ──
-  const installSettings = (settingsService: any) => {
-    if (!settingsService?.installSection || settingsInstalled) return;
-    settingsInstalled = true;
-    settingsService.installSection(ctx, SETTINGS_NAMESPACE, PluginConfigSchema, config, {
-      setSource: (source: () => PluginConfig) => {
-        configSource = source;
-        if (!isInitializing && !activeWiring && !isRootDisposed) {
-          void queueReconcile();
-        }
-      },
-      onChange: (newVal: PluginConfig) => {
-        if (isInitializing) return;
-        logger.info('配置已更新，正在对齐运行状态...');
-        void queueReconcile(newVal);
-      },
-    });
-
-    (ctx as any).on('settings/updated', (ns: string, next: any) => {
-      if (isInitializing) return;
-      if (!ns || ns === SETTINGS_NAMESPACE) {
-        logger.info('收到 settings/updated 事件，正在对齐运行状态...');
-        void queueReconcile(next);
-      }
-    });
-    (ctx as any).on('settings/document-updated', (ns: string) => {
-      if (isInitializing) return;
-      if (!ns || ns === SETTINGS_NAMESPACE) {
-        logger.info('收到 settings/document-updated 事件，正在对齐运行状态...');
-        void queueReconcile();
-      }
-    });
-  };
-
-  // 优先直接调用已就绪的 settings 服务（消除延迟），同时保留 inject 监听保证异步挂载兼容
-  const directSettings = optionalService<any>(ctx, 'settings');
-  if (directSettings) {
-    installSettings(directSettings);
-  }
-  ctx.inject(['settings'], (settingsCtx) => {
-    installSettings((settingsCtx as any)?.settings);
+  // ── 监听 0.2.0 原生 volatile 配置热更新 ──
+  (ctx as any).on('loader/volatile-update', () => {
+    if (isInitializing || isRootDisposed) return;
+    logger.info('收到 loader/volatile-update 事件，正在对齐运行状态...');
+    void queueReconcile();
   });
+  (ctx as any).on('settings/document-updated', (ns: string) => {
+    if (isInitializing || isRootDisposed) return;
+    if (!ns || ns === 'dsh-qqbot-bridge') {
+      logger.info('收到 settings/document-updated 事件，正在对齐运行状态...');
+      void queueReconcile();
+    }
+  });
+  if (options.onReconcileReady) {
+    options.onReconcileReady(queueReconcile);
+  }
 
   // ── 初次尝试组装运行链路 ──
+  await migrateLegacyConfig(ctx, currentConfig());
   const initialCfg = currentConfig();
   const { credential, reason } = resolveCredentials(initialCfg, { dshHome });
 
@@ -711,7 +729,7 @@ export async function wire(
     if (activeWiring) {
       const w = activeWiring;
       activeWiring = undefined;
-      await w.dispose().catch(() => undefined);
+      await w.dispose().catch((err) => logger.error('释放活动接线失败', err));
     }
   };
 
@@ -743,5 +761,24 @@ export async function wire(
  * Cordis 插件入口。`apply` 只做接线与生命周期登记（业务逻辑全在 `wire()` 装配的模块里）。
  */
 export async function apply(ctx: Context, config: PluginConfig = {}): Promise<void> {
-  await wire(ctx, config);
+  // 1. 异步触发一次旧版配置静默迁移
+  void migrateLegacyConfig(ctx, config);
+
+  // 2. 注册 ctx.inject(['settings'], s => (s as any).settings?.configure?.({ auto: false }, ctx.fiber))，声明自定义卡片，避免自动生成多余表单
+  ctx.inject(['settings'], (s) => (s as any).settings?.configure?.({ auto: false }, ctx.fiber));
+
+  // 3. 组装运行链路与热更新回调
+  let queueReconcile: (() => Promise<void>) | undefined;
+  await wire(ctx, config, {
+    onReconcileReady: (qr) => {
+      queueReconcile = qr;
+    },
+  });
+
+  // 4. 监听 ctx.on('loader/volatile-update', () => queueReconcile())，实现 0.2.0 原生 volatile 配置热更新
+  (ctx as any).on('loader/volatile-update', () => {
+    if (queueReconcile) {
+      void queueReconcile();
+    }
+  });
 }

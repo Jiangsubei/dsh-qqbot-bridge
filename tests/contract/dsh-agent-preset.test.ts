@@ -150,17 +150,74 @@ describe('契约：agent preset 的会话记录与接管复原（真实 DSH 装�
       dshHome: home,
       mountPlugin: false,
       extraPatches: [
+        { id: 'compaction-basic', disabled: true },
+        { id: 'command-compact', disabled: true },
+        { id: 'tool-result-pruner', disabled: true },
         {
           insert: [
             {
               id: 'agent-presets',
-              name: '@deepseek-ai/dsh-agent-presets',
-              // patch 是「整段替换 config」⇒ 四个字段都要给
+              name: '@deepseek-ai/dsh-agent-preset-registry',
               config: {
                 default: DEFAULT_PRESET,
-                roots: [{ path: fixtureRoot, trust: 'user' }],
-                includeShippedRoot: false,
-                includeUserRoot: false,
+              },
+            },
+            {
+              id: `preset-${DEFAULT_PRESET}`,
+              name: '@deepseek-ai/dsh-agent-preset',
+              config: {
+                id: DEFAULT_PRESET,
+                name: 'D52 默认 fixture',
+                order: 1,
+                plugins: [
+                  {
+                    id: 'compaction',
+                    name: 'cordis:group',
+                    group: true,
+                    isolate: {
+                      compaction: true,
+                      toolResultPruner: true,
+                    },
+                    config: [
+                      { id: 'compaction-basic', name: '@deepseek-ai/dsh-compaction-basic' },
+                      { id: 'command-compact', name: '@deepseek-ai/dsh-command-compact' },
+                      {
+                        id: 'tool-result-pruner',
+                        name: '@deepseek-ai/dsh-compaction-tool-result-pruner',
+                        config: { thresholdChars: 8192, headChars: 4096 },
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+            {
+              id: `preset-${OTHER_PRESET}`,
+              name: '@deepseek-ai/dsh-agent-preset',
+              config: {
+                id: OTHER_PRESET,
+                name: 'D52 备选 fixture',
+                order: 2,
+                plugins: [
+                  {
+                    id: 'compaction',
+                    name: 'cordis:group',
+                    group: true,
+                    isolate: {
+                      compaction: true,
+                      toolResultPruner: true,
+                    },
+                    config: [
+                      { id: 'compaction-basic', name: '@deepseek-ai/dsh-compaction-basic' },
+                      { id: 'command-compact', name: '@deepseek-ai/dsh-command-compact' },
+                      {
+                        id: 'tool-result-pruner',
+                        name: '@deepseek-ai/dsh-compaction-tool-result-pruner',
+                        config: { thresholdChars: 8192, headChars: 4096 },
+                      },
+                    ],
+                  },
+                ],
               },
             },
           ],

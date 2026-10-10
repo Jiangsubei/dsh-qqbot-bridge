@@ -71,10 +71,11 @@ describe('契约测试: 设置卡片分区（card.tsx）', () => {
   // 与 schema 默认（相对 $DSH_HOME 的 `qqbot/media`）不一致 —— 卡片显示值与插件真实落点不同路径。
   // 这条断言逐字段比对「卡片基线 vs schema 解析出的默认值」，防止同类漂移再犯。
   it('卡片的 11 个字段基线默认值与 config/schema.ts 逐字段一致（不得各写一份）', () => {
-    const schemaDefaults = PluginConfigSchema({}) as Required<PluginConfig>;
+    const rawDefaults = PluginConfigSchema({}) as any;
     for (const key of Object.keys(ALL_FIELDS) as Array<keyof PluginConfig>) {
+      const actualDefault = typeof rawDefaults[key]?.get === 'function' ? rawDefaults[key].get() : rawDefaults[key];
       expect(DEFAULT_BASE_CONFIG[key], `字段 ${key} 的默认值与 schema 不一致`).toEqual(
-        schemaDefaults[key],
+        actualDefault,
       );
     }
   });

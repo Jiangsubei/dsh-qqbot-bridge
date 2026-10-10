@@ -21,8 +21,13 @@ export function buildSettingsBridge(ctx: any, namespace: string = SETTINGS_NAMES
   const scope = ctx.settingsScope?.bind?.({ namespace }) ?? null;
 
   const readNamespace = () => {
-    const view = describe?.getSnapshot?.().view;
-    const row = view?.namespaces?.find((n: any) => n.ns === namespace);
+    const describeSnap =
+      typeof describe?.getSnapshot === 'function' ? describe.getSnapshot() : describe;
+    const view = describeSnap?.view ?? describeSnap;
+    const namespaces = Array.isArray(view) ? view : view?.namespaces;
+    const row = namespaces?.find(
+      (n: any) => n?.ns === namespace || n?.id === namespace || n?.key === namespace
+    );
     if (row) return row;
     const scopeSnap = scope?.getSnapshot?.();
     if (scopeSnap && scopeSnap.status !== 'unavailable') {
@@ -210,6 +215,7 @@ export function apply(ctx: any) {
     yield ctx.slots.register(
       {
         name: 'settings.plugin.item',
+        id: 'dsh-qqbot-bridge',
         key: 'dsh-qqbot-bridge',
         inject: () => buildSettingsBridge(ctx, SETTINGS_NAMESPACE),
       },

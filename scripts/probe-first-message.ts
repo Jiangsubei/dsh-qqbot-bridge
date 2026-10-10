@@ -33,8 +33,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import { createRequire } from 'node:module';
-
-import { boot, healProfilesModuleFallback, initProfile, loadProfile } from '@deepseek-ai/dsh-app-boot';
+import { boot, initProfile, loadProfile } from '@deepseek-ai/dsh-app-boot';
 
 import { wire, type QqBridgeWiring } from '../src/index.js';
 import type {
@@ -150,10 +149,9 @@ async function openScenario(config: Record<string, unknown> = {}): Promise<Scena
   const installAnchor = require.resolve('@deepseek-ai/dsh/package.json');
   const profileDir = path.join(tmpHome, 'profiles', PROFILE);
   await fsp.mkdir(profileDir, { recursive: true });
-  initProfile(profileDir, BUNDLES, 'live');
+  initProfile(profileDir, BUNDLES);
   const rootConfig = path.join(profileDir, 'cordis.yml');
   await fsp.writeFile(rootConfig, '[]\n', 'utf8');
-  await healProfilesModuleFallback({ installAnchor, home: tmpHome });
   const profile = loadProfile('dsh-qqbot-bridge-probe', PROFILE, installAnchor, tmpHome);
   const bundlePatches = profile.layers.flatMap((layer: any) => layer.patches);
   const overlays: any[] = [

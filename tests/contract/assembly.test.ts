@@ -103,9 +103,13 @@ class FakeQqClient implements QqClientLike {
 /** 结构面读取 settings 服务（避免依赖未声明的 Context 增强） */
 function settingsNamespaceRow(ctxHost: object, ns: string): unknown {
   const settings = (ctxHost as { get?: (k: string) => unknown }).get?.('settings') as
-    | { get?: (n: string) => unknown }
+    | { get?: (n: string) => unknown; describe?: () => Array<{ ns?: string; id?: string }> }
     | undefined;
-  return settings?.get?.(ns);
+  if (!settings) return undefined;
+  if (typeof settings.describe === 'function') {
+    return settings.describe().find((d) => d.ns === ns || d.id === ns);
+  }
+  return settings.get?.(ns);
 }
 
 /** 轮询等待条件成立（插件 `apply` 是异步的：`ctx.plugin()` 不 await 其完成） */

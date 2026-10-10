@@ -104,13 +104,37 @@ describe('契约：压缩服务的平面寻址（真实 DSH 装配，复刻 web 
           insert: [
             {
               id: 'agent-presets',
-              name: '@deepseek-ai/dsh-agent-presets',
-              // patch 是「整段替换 config」⇒ 四个字段都要给
+              name: '@deepseek-ai/dsh-agent-preset-registry',
               config: {
                 default: 'qqbot-compaction-fixture',
-                roots: [{ path: fixtureRoot, trust: 'user' }],
-                includeShippedRoot: false,
-                includeUserRoot: false,
+              },
+            },
+            {
+              id: 'preset-qqbot-compaction-fixture',
+              name: '@deepseek-ai/dsh-agent-preset',
+              config: {
+                id: 'qqbot-compaction-fixture',
+                name: 'D52 压缩 fixture',
+                plugins: [
+                  {
+                    id: 'compaction',
+                    name: 'cordis:group',
+                    group: true,
+                    isolate: {
+                      compaction: true,
+                      toolResultPruner: true,
+                    },
+                    config: [
+                      { id: 'compaction-basic', name: '@deepseek-ai/dsh-compaction-basic' },
+                      { id: 'command-compact', name: '@deepseek-ai/dsh-command-compact' },
+                      {
+                        id: 'tool-result-pruner',
+                        name: '@deepseek-ai/dsh-compaction-tool-result-pruner',
+                        config: { thresholdChars: 8192, headChars: 4096 },
+                      },
+                    ],
+                  },
+                ],
               },
             },
           ],

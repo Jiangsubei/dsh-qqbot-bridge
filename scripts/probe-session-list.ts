@@ -36,7 +36,7 @@ import * as fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import { createRequire } from 'node:module';
 
-import { boot, healProfilesModuleFallback, initProfile, loadProfile } from '@deepseek-ai/dsh-app-boot';
+import { boot, initProfile, loadProfile } from '@deepseek-ai/dsh-app-boot';
 
 const require = createRequire(import.meta.url);
 
@@ -219,10 +219,9 @@ async function main(): Promise<void> {
   const installAnchor = require.resolve('@deepseek-ai/dsh/package.json');
   const profileDir = path.join(tmpHome, 'profiles', PROFILE);
   await fsp.mkdir(profileDir, { recursive: true });
-  initProfile(profileDir, [...BUNDLES, ...EXTRA_BUNDLES, 'dsh-probe-standin'], 'live');
+  initProfile(profileDir, [...BUNDLES, ...EXTRA_BUNDLES, 'dsh-probe-standin']);
   const rootConfig = path.join(profileDir, 'cordis.yml');
   await fsp.writeFile(rootConfig, '[]\n', 'utf8');
-  await healProfilesModuleFallback({ installAnchor, home: tmpHome });
   // 额外 bundle 不在 DSH 安装闭包里（用户 profile 自装），按包名软链进隔离 profiles/node_modules
   for (const name of EXTRA_BUNDLES) {
     const src = path.join(realHome, 'profiles', 'web', 'node_modules', name);
