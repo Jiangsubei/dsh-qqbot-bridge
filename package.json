@@ -1,6 +1,6 @@
 {
   "name": "dsh-qqbot-bridge",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "DSH QQ 官方机器人桥接插件 —— 通过 QQ 单聊远程控制 DSH WebUI 已有工作区的会话",
   "type": "module",
   "main": "dist/index.js",
@@ -64,7 +64,8 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.0.0",
+    "dsh": ">=0.2.0"
   },
   "keywords": [
     "dsh",
