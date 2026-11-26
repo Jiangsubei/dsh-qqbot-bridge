@@ -25,7 +25,7 @@ import type {
 import type { Logger } from '../utils/logger.js';
 import { REPLY_MAX_CHARS } from '../constants/index.js';
 import { t } from '../i18n/index.js';
-import { COMMAND_NAMES, isKnownCommand, isPagingCommand, PAGING_COMMANDS } from './parse.js';
+import { COMMAND_NAMES, isKnownCommand, isPagingCommand, PAGING_COMMANDS, resolveCommandAlias } from './parse.js';
 import { defaultPageSize, paginate, type Page } from './paging.js';
 
 // ═══════════════════ 官方服务门面（D26/D31：直调，不落插件自有状态） ═══════════════════
@@ -821,12 +821,15 @@ export function createCommandDispatcher(options: CommandDispatcherOptions): Comm
       return isKnownCommand(name);
     },
     async handle(cmd: CommandContext): Promise<CommandResult> {
-      logger.debug(`[commands] dispatch /${cmd.name}`, { openid: cmd.openid, args: cmd.args });
-      const pagingActive = paging.get(cmd.openid) !== undefined;
-      const result = await route(cmd);
+      const canonical = resolveCommandAlias(cmd.name);
+      const normalizedCmd = canonical === cmd.name ? cmd : { ...cmd, name: canonical };
+      logger.debug(`[commands] dispatch /${normalizedCmd.name}`, { openid: normalizedCmd.openid, args: normalizedCmd.args });
+      const pagingActive = paging.get(normalizedCmd.openid) !== undefined;
+      const result = await route(normalizedCmd);
       // 建立/翻动分页的命令自身管理分页状态（无参列表命令会重设分页，不得被误清）
       const managesPaging =
-        isPagingCommand(cmd.name) || ((cmd.name === '会话' || cmd.name === '切换') && cmd.args.trim() === '');
+        isPagingCommand(normalizedCmd.name) ||
+        ((normalizedCmd.name === '会话' || normalizedCmd.name === '切换') && normalizedCmd.args.trim() === '');
       // D22：分页活跃时收到无关命令 → 退出分页后正常处理（管线负责清理，这里给出契约信号）
       if (pagingActive && !managesPaging) {
         return { ...result, exitPaging: true };

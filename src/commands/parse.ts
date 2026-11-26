@@ -31,6 +31,35 @@ export const PAGING_COMMANDS: readonly string[] = ['下一页', '上一页'];
 /** 全部已知命令名（`/帮助` 与 `isKnown` 用） */
 export const COMMAND_NAMES: readonly string[] = [...MAIN_COMMANDS, ...PAGING_COMMANDS];
 
+/** 常用英文命令别名 → 规范中文主命令（大小写不敏感） */
+export const COMMAND_ALIASES: Readonly<Record<string, string>> = {
+  sessions: '会话',
+  ls: '会话',
+  switch: '切换',
+  ws: '切换',
+  new: '新建',
+  reset: '新建',
+  clear: '新建',
+  stop: '停止',
+  abort: '停止',
+  status: '状态',
+  compact: '压缩',
+  model: '模型',
+  thinking: '思考',
+  think: '思考',
+  permission: '权限',
+  perm: '权限',
+  help: '帮助',
+  next: '下一页',
+  prev: '上一页',
+};
+
+/** 将命令名（含英文别名）归一化为规范命令名 */
+export function resolveCommandAlias(name: string): string {
+  const lower = name.trim().toLowerCase();
+  return COMMAND_ALIASES[lower] ?? lower;
+}
+
 export interface ParsedCommand {
   /** 命令名（不含 `/`，已小写） */
   name: string;
@@ -55,19 +84,19 @@ export function parseCommand(raw: string): ParsedCommand | undefined {
   const match = /^\/([^\s]*)(?:\s+([\s\S]*))?$/.exec(trimmed);
   if (!match) return undefined;
   return {
-    name: (match[1] ?? '').toLowerCase(),
+    name: resolveCommandAlias(match[1] ?? ''),
     args: (match[2] ?? '').trim(),
   };
 }
 
 /** 是否为分页专属子命令（D22） */
 export function isPagingCommand(name: string): boolean {
-  return PAGING_COMMANDS.includes(name);
+  return PAGING_COMMANDS.includes(resolveCommandAlias(name));
 }
 
 /** 是否为已知命令 */
 export function isKnownCommand(name: string): boolean {
-  return COMMAND_NAMES.includes(name.toLowerCase());
+  return COMMAND_NAMES.includes(resolveCommandAlias(name));
 }
 
 /**

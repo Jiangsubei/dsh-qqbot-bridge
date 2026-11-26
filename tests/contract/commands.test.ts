@@ -290,7 +290,31 @@ describe('契约: 自研命令解析（不接 ctx.commands）', () => {
   it('分页命令是列表专属子命令（isPagingCommand）', () => {
     expect(isPagingCommand('下一页')).toBe(true);
     expect(isPagingCommand('上一页')).toBe(true);
+    expect(isPagingCommand('next')).toBe(true);
+    expect(isPagingCommand('prev')).toBe(true);
     expect(isPagingCommand('会话')).toBe(false);
+  });
+
+  it('兼容常用英文命令别名（大小写不敏感与全角斜杠）', () => {
+    expect(parseCommand('/sessions 2')).toEqual({ name: '会话', args: '2' });
+    expect(parseCommand('/ls')).toEqual({ name: '会话', args: '' });
+    expect(parseCommand('/switch 1')).toEqual({ name: '切换', args: '1' });
+    expect(parseCommand('/ws')).toEqual({ name: '切换', args: '' });
+    expect(parseCommand('/new')).toEqual({ name: '新建', args: '' });
+    expect(parseCommand('/reset')).toEqual({ name: '新建', args: '' });
+    expect(parseCommand('/clear')).toEqual({ name: '新建', args: '' });
+    expect(parseCommand('/stop')).toEqual({ name: '停止', args: '' });
+    expect(parseCommand('/abort')).toEqual({ name: '停止', args: '' });
+    expect(parseCommand('/status')).toEqual({ name: '状态', args: '' });
+    expect(parseCommand('/compact')).toEqual({ name: '压缩', args: '' });
+    expect(parseCommand('/MODEL deepseek-chat')).toEqual({ name: '模型', args: 'deepseek-chat' });
+    expect(parseCommand('/thinking high')).toEqual({ name: '思考', args: 'high' });
+    expect(parseCommand('/think low')).toEqual({ name: '思考', args: 'low' });
+    expect(parseCommand('/permission read-only')).toEqual({ name: '权限', args: 'read-only' });
+    expect(parseCommand('/perm')).toEqual({ name: '权限', args: '' });
+    expect(parseCommand('／Help')).toEqual({ name: '帮助', args: '' });
+    expect(parseCommand('/next')).toEqual({ name: '下一页', args: '' });
+    expect(parseCommand('/prev')).toEqual({ name: '上一页', args: '' });
   });
 
   it('未知命令回执必须明确「未发送给会话」（C-R5）', () => {
@@ -320,6 +344,29 @@ describe('契约: 命令清单与帮助（§3 / D18）', () => {
     expect(h.dispatcher.isKnown('yolo')).toBe(false);
     expect(h.dispatcher.isKnown('会话')).toBe(true);
     expect(h.dispatcher.isKnown('下一页')).toBe(true);
+    expect(h.dispatcher.isKnown('model')).toBe(true);
+    expect(h.dispatcher.isKnown('HELP')).toBe(true);
+    expect(h.dispatcher.isKnown('next')).toBe(true);
+  });
+
+  it('英文别名命令可直接经 dispatcher.handle 正常路由', async () => {
+    const rHelp = await h.dispatcher.handle({
+      openid: OPENID,
+      raw: '/help',
+      name: 'help',
+      args: '',
+      target: OUTBOUND,
+    });
+    expect(rHelp.handled).toBe(true);
+    expect(rHelp.reply).toContain('【命令帮助】');
+
+    const rStatus = await h.dispatcher.handle(cmd('/status'));
+    expect(rStatus.handled).toBe(true);
+    expect(rStatus.reply).toContain('控制目标');
+
+    const rModel = await h.dispatcher.handle(cmd('/model deepseek-v4-flash'));
+    expect(rModel.handled).toBe(true);
+    expect(h.official.select).toHaveBeenCalledTimes(1);
   });
 
   it('/帮助 渲染命令清单与用法，且为纯文本（D34）', async () => {
