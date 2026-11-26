@@ -102,6 +102,7 @@ interface Pending {
   optionCount?: number;
   resolve: (res: PendingResolution) => void;
   timer: NodeJS.Timeout;
+  cleanup?: () => void;
 }
 
 /** 单个 openid 的待决槽（审批与提问各自独立持有） */
@@ -113,6 +114,12 @@ class PendingSlot implements PendingInteraction {
     this.kind = kind;
   }
 
+  private settle(pending: Pending, resolution: PendingResolution): void {
+    clearTimeout(pending.timer);
+    pending.cleanup?.();
+    pending.resolve(resolution);
+  }
+
   hasPending(openid: string): boolean {
     return this.current.has(openid);
   }
@@ -121,9 +128,8 @@ class PendingSlot implements PendingInteraction {
   handle(openid: string, text: string): boolean {
     const pending = this.current.get(openid);
     if (!pending) return false;
-    clearTimeout(pending.timer);
     this.current.delete(openid);
-    pending.resolve({ raw: text });
+    this.settle(pending, { raw: text });
     return true;
   }
 
@@ -138,50 +144,59 @@ class PendingSlot implements PendingInteraction {
     ) {
       return false;
     }
-    clearTimeout(pending.timer);
     this.current.delete(openid);
-    pending.resolve({ raw: value, ...(eventId ? { eventId } : {}) });
+    this.settle(pending, { raw: value, ...(eventId ? { eventId } : {}) });
     return true;
   }
 
-  /** 登记一次待决；新请求顶掉旧请求（旧的 fail-closed） */
+  /** 登记一次待决；新请求顶掉旧请求（旧的 fail-closed），并在 signal 中止时立刻释放 */
   async wait(
     openid: string,
     timeoutMs: number,
     logger: Logger,
     nonce: string,
     optionCount?: number,
+    signal?: AbortSignal,
   ): Promise<PendingResolution> {
     const previous = this.current.get(openid);
     if (previous) {
-      clearTimeout(previous.timer);
       this.current.delete(openid);
       logger.warn(`[${this.kind}] openid=${openid.slice(0, 8)}… 已有待决交互，旧请求被新请求顶掉`);
-      previous.resolve({ raw: this.kind === 'approval' ? '__superseded__' : '__cancel__' });
+      this.settle(previous, { raw: this.kind === 'approval' ? '__superseded__' : '__cancel__' });
     }
     return new Promise<PendingResolution>((resolve) => {
+      let entry: Pending;
       const timer = setTimeout(() => {
         this.current.delete(openid);
         logger.warn(`[${this.kind}] openid=${openid.slice(0, 8)}… 等待超时（${timeoutMs}ms），fail-closed`);
-        resolve({ raw: '__timeout__' });
+        this.settle(entry, { raw: '__timeout__' });
       }, timeoutMs);
-      this.current.set(openid, {
+      const onAbort = (): void => {
+        if (this.current.get(openid) !== entry) return;
+        this.current.delete(openid);
+        logger.info(`[${this.kind}] openid=${openid.slice(0, 8)}… 收到中止信号，已清理待决槽位`);
+        this.settle(entry, { raw: '__abort__' });
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      entry = {
         openid,
         nonce,
         ...(optionCount === undefined ? {} : { optionCount }),
         resolve,
         timer,
-      });
+        ...(signal ? { cleanup: () => signal.removeEventListener('abort', onAbort) } : {}),
+      };
+      this.current.set(openid, entry);
     });
   }
 
   /** 清空（dispose 时 fail-closed） */
   clear(): void {
-    for (const [, p] of this.current) {
-      clearTimeout(p.timer);
-      p.resolve({ raw: '__cancel__' });
-    }
+    const entries = [...this.current.values()];
     this.current.clear();
+    for (const p of entries) {
+      this.settle(p, { raw: '__cancel__' });
+    }
   }
 }
 
@@ -342,12 +357,19 @@ export class QqInteractions {
 
     let resolution: PendingResolution;
     try {
-      resolution = await this.approvalSlot.wait(openid, this.timeoutMs, this.deps.logger, nonce);
+      resolution = await this.approvalSlot.wait(
+        openid,
+        this.timeoutMs,
+        this.deps.logger,
+        nonce,
+        undefined,
+        req?.signal,
+      );
     } catch (err: unknown) {
       this.deps.logger.error('审批等待异常', err);
       return 'unavailable';
     }
-    if (req?.signal?.aborted) return 'cancelled';
+    if (resolution.raw === '__abort__' || req?.signal?.aborted) return 'cancelled';
 
     const raw = resolution.raw;
     const verdict = raw.trim().toLowerCase();
@@ -409,9 +431,14 @@ export class QqInteractions {
         this.deps.logger,
         nonce,
         options.length > 0 ? options.length : undefined,
+        request?.signal,
       );
       nextTargetOverride = resolution.eventId ? { openid, eventId: resolution.eventId } : undefined;
       const text = resolution.raw.trim();
+
+      if (text === '__abort__' || request?.signal?.aborted) {
+        throw new Error(t('interactions.question.unanswered'));
+      }
 
       if (text === '__timeout__' || text === '__cancel__' || CANCEL_WORDS.has(text.toLowerCase())) {
         await this.deps.sendText(openid, t('interactions.question.cancelled'));

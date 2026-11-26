@@ -530,14 +530,19 @@ describe('T3 控制层（真实 DSH 装配）', () => {
       },
     });
     const projections: SessionProjectionsLike = {
-      stateOf: (_session: Session, key: 'turnBoundary' | 'modelSelection') => {
-        if (key === 'modelSelection') {
-          return { lastUsed: null, pending: { provider: 'opencode-go', model: 'deepseek-flash' } };
+      snapshot: (session, keys) => {
+        if (keys?.includes('modelSelection')) {
+          return {
+            values: {
+              modelSelection: {
+                lastUsed: null,
+                next: { provider: 'opencode-go', model: 'deepseek-flash' },
+              },
+            },
+          };
         }
-        return undefined;
+        return requireService<SessionProjectionsLike>(ctxHost, 'sessionProjections').snapshot(session, keys);
       },
-      snapshot: (session, keys) =>
-        requireService<SessionProjectionsLike>(ctxHost, 'sessionProjections').snapshot(session, keys),
     };
 
     await withService(
@@ -557,12 +562,12 @@ describe('T3 控制层（真实 DSH 装配）', () => {
     await withService(
       {
         sessionProjections: {
-          stateOf: (_session: Session, key: 'turnBoundary' | 'modelSelection') => {
-            if (key === 'modelSelection') throw new Error('modelSelection projection is not registered');
-            return undefined;
+          snapshot: (session, keys) => {
+            if (keys?.includes('modelSelection')) {
+              throw new Error('modelSelection projection is not registered');
+            }
+            return requireService<SessionProjectionsLike>(ctxHost, 'sessionProjections').snapshot(session, keys);
           },
-          snapshot: (session, keys) =>
-            requireService<SessionProjectionsLike>(ctxHost, 'sessionProjections').snapshot(session, keys),
         },
       },
       { restoreOnStart: false },
@@ -845,22 +850,20 @@ describe('T3 控制层（真实 DSH 装配）', () => {
             return live === undefined ? undefined : spyAgent;
           };
         }
+        if (prop === 'turnBoundaryOf') {
+          return () => ({
+            openTurnStartSeq: busySeq as Session['id'] extends never ? never : never,
+            lastStepStartSeq: null,
+            lastStepBoundary: null,
+            lastTurn: busySeq === null ? 0 : 1,
+          });
+        }
         return Reflect.get(target, prop, receiver);
       },
     });
-    const projections: SessionProjectionsLike = {
-      stateOf: (_session: Session, _key: 'turnBoundary') => ({
-        openTurnStartSeq: busySeq as Session['id'] extends never ? never : never,
-        lastStepStartSeq: null,
-        lastStepBoundary: null,
-        lastTurn: busySeq === null ? 0 : 1,
-      }),
-      snapshot: (session, keys) =>
-        requireService<SessionProjectionsLike>(ctxHost, 'sessionProjections').snapshot(session, keys),
-    };
 
     await withService(
-      { agents: spyAgents, sessionProjections: projections },
+      { agents: spyAgents },
       { restoreOnStart: false },
       async ({ control }) => {
         expect((await control.setTarget('u-send', fixtureSessionId)).ok).toBe(true);
@@ -876,13 +879,8 @@ describe('T3 控制层（真实 DSH 装配）', () => {
     );
 
     expect(calls).toEqual(['followup', 'steer']);
-    // 真实 followup/steer 已被告替身拦截：真实投影仍为「无未结束 turn」
-    expect(
-      requireService<SessionProjectionsLike>(ctxHost, 'sessionProjections').stateOf(
-        fixtureAgent.session,
-        'turnBoundary',
-      )?.openTurnStartSeq,
-    ).toBeNull();
+    // 真实 followup/steer 已被替身拦截：真实 turnBoundaryOf 仍为「无未结束 turn」
+    expect(agents().turnBoundaryOf?.(fixtureAgent.session)?.openTurnStartSeq).toBeNull();
   });
 
   // ─────────────── D24 / D25 / D26：/新建 ───────────────
@@ -1067,6 +1065,37 @@ describe('T3 控制层（真实 DSH 装配）', () => {
         expect(status.permissionPreset).toBe(optional.permissionPresets.current(fixtureAgent.session));
         expect((status.permissionPreset ?? '').length).toBeGreaterThan(0);
       }
+    });
+  });
+
+  it('D32：status().busy 只依据 live.status !== "idle"（非空闲即运行中）', async () => {
+    let agentStatus: 'idle' | 'running' = 'running';
+    const statusAgent = new Proxy(fixtureAgent, {
+      get(target, prop, receiver) {
+        if (prop === 'status') return agentStatus;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const spyAgents: AgentRegistryLike = new Proxy(agents(), {
+      get(target, prop, receiver) {
+        if (prop === 'get') {
+          return (id: SessionId): Agent | undefined =>
+            String(id) === fixtureSessionId ? statusAgent : target.get(id);
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await withService({ agents: spyAgents }, { restoreOnStart: false }, async ({ control }) => {
+      expect((await control.setTarget('u-status-busy', fixtureSessionId)).ok).toBe(true);
+
+      // 即使 turnBoundary.openTurnStartSeq 为 null，只要 agent.status !== 'idle' 即返回 busy: true（运行中）
+      agentStatus = 'running';
+      expect((await control.status('u-status-busy'))?.busy).toBe(true);
+
+      // agent.status === 'idle' 时返回 busy: false（空闲）
+      agentStatus = 'idle';
+      expect((await control.status('u-status-busy'))?.busy).toBe(false);
     });
   });
 

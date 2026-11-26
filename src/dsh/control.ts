@@ -65,20 +65,26 @@ export interface AgentRegistryLike {
   get(id: SessionId): Agent | undefined;
   create(options: CreateAgentOptions): Promise<AgentHandle>;
   resume(options: ResumeAgentOptions): Promise<AgentHandle>;
+  turnBoundaryOf?(session: Session): TurnBoundaryProjection;
 }
 
-/** `ctx.sessionProjections` 的最小结构面（只取本项目用到的两个面） */
+/** `modelSelection` 投影的客户端视图（0.2.2：`{ lastUsed, next }`） */
+export interface ModelSelectionProjectionLike {
+  readonly lastUsed: ModelSelectionLike | null;
+  readonly next: ModelSelectionLike | null;
+}
+
+/** `ctx.sessionProjections` 的最小结构面（只取本项目用到的面） */
 export interface SessionProjectionsLike {
-  stateOf(session: Session, key: 'turnBoundary'): TurnBoundaryProjection | undefined;
+  stateOf?(session: Session, key: 'turnBoundary'): TurnBoundaryProjection | undefined;
   /**
-   * `modelSelection` 投影 state（D48）：`{ lastUsed, pending }`，
-   * 【文档明写】`dsh-api-session-controller/lib/index.js:2039-2051`。
-   * 官方 `selectionFor()` 就是用它读「该会话当前模型」（同文件 `:280-295`）。
+   * `modelSelection` 投影 state（D48）：`{ lastUsed, pending }`（0.2.2 已弃用 `stateOf`，
+   * 仅作测试桩兼容回退；生产路径走 `snapshot(['modelSelection'])`）。
    */
-  stateOf(session: Session, key: 'modelSelection'): ModelSelectionProjectionStateLike | undefined;
+  stateOf?(session: Session, key: 'modelSelection'): ModelSelectionProjectionStateLike | undefined;
   snapshot(
     session: Session,
-    keys?: readonly ('contextPressure' | 'contextBreakdown')[],
+    keys?: readonly ('contextPressure' | 'contextBreakdown' | 'modelSelection')[],
   ): ProjectionSnapshotLike;
 }
 
@@ -103,6 +109,7 @@ export interface ProjectionSnapshotLike {
       readonly toolsTokens: number;
       readonly messageTokens: number;
     };
+    readonly modelSelection?: ModelSelectionProjectionLike;
   };
 }
 
@@ -148,6 +155,7 @@ export interface AgentPresetsLike {
 /** `ctx.tokenMeter` 的最小结构面 */
 export interface TokenMeterLike {
   measure(session: Session): TokenMeasurement;
+  contextPressure?(session: Session): { readonly contextWindow?: number };
 }
 
 export interface ControlLoggerLike {
@@ -797,7 +805,7 @@ export class DshControlService implements ControlService {
     if (selection.reasoningEffort !== undefined) status.reasoningEffort = selection.reasoningEffort;
 
     if (live !== undefined) {
-      status.busy = this.isBusy(live.session);
+      status.busy = live.status !== 'idle';
       if (this.ctx.permissionPresets !== undefined) {
         status.permissionPreset = this.ctx.permissionPresets.current(live.session);
       }
@@ -940,16 +948,18 @@ export class DshControlService implements ControlService {
   }
 
   /**
-   * 判忙（设计方案 §7.3）：`turnBoundary.openTurnStartSeq !== null` 即忙。
-   * E12-A【实测】运行中非 null、结束后 null。投影缺席时**如实告警**并视为空闲
-   * （不自行维护 turn 配对；`dsh-agent-loop` 必然注册该投影）。
+   * 判忙（设计方案 §7.3）：`turnBoundary.openTurnStartSeq !== null` 即忙，用于 `send()` 判定 steer/followup。
+   * 优先使用 0.2.2 正式入口 `ctx.agents.turnBoundaryOf(session)`；仅当测试替身缺席时回退旧 `stateOf`。
    */
   private isBusy(session: Session): boolean {
-    const boundary = this.ctx.sessionProjections.stateOf(session, 'turnBoundary');
+    if (typeof this.ctx.agents.turnBoundaryOf === 'function') {
+      return this.ctx.agents.turnBoundaryOf(session).openTurnStartSeq !== null;
+    }
+    const boundary = this.ctx.sessionProjections.stateOf?.(session, 'turnBoundary');
     if (boundary === undefined) {
       if (!this.projectionWarningLogged) {
         this.projectionWarningLogged = true;
-        this.log('warn', 'sessionProjections 缺席 turnBoundary 投影，判忙退化为「空闲」');
+        this.log('warn', 'agents.turnBoundaryOf 与 turnBoundary 投影均缺席，判忙退化为「空闲」');
       }
       return false;
     }
@@ -1104,13 +1114,19 @@ export class DshControlService implements ControlService {
   }
 
   /**
-   * 安静读取 `modelSelection` 投影的 `pending`（D48）。
-   * 该投影单元由 `dsh-api-session-controller` 注册（web 平面）；base-only / headless 装配里
-   * 不存在——官方此时会**抛错**（`lib/index.js:281`），我们只做降级（不显示升/降级噪声）。
+   * 安静读取 `modelSelection` 投影的 `next`（D48）。
+   * 0.2.2 起优先经 `snapshot(session, ['modelSelection'])` 读取（`values.modelSelection.next`，
+   * 避免调用已弃用的 `sessionProjections.stateOf`）；仅当 `modelSelection` 投影未在 snapshot
+   * 返回时兼容旧版 `stateOf` 测试桩。
    */
   private readPendingModelSelection(session: Session): ModelSelectionLike | undefined {
     try {
-      const state = this.ctx.sessionProjections.stateOf(session, 'modelSelection');
+      const snapshot = this.ctx.sessionProjections.snapshot(session, ['modelSelection']);
+      const view = snapshot?.values?.modelSelection;
+      if (view !== undefined) {
+        return view.next ?? undefined;
+      }
+      const state = this.ctx.sessionProjections.stateOf?.(session, 'modelSelection');
       return state?.pending ?? undefined;
     } catch {
       return undefined;
@@ -1129,6 +1145,10 @@ export class DshControlService implements ControlService {
 
   private contextWindowQuietly(session: Session): number | undefined {
     try {
+      if (typeof this.ctx.tokenMeter?.contextPressure === 'function') {
+        const pressure = this.ctx.tokenMeter.contextPressure(session);
+        if (typeof pressure?.contextWindow === 'number') return pressure.contextWindow;
+      }
       const snapshot = this.ctx.sessionProjections.snapshot(session, ['contextPressure']);
       const contextWindow = snapshot.values.contextPressure?.contextWindow;
       return typeof contextWindow === 'number' ? contextWindow : undefined;

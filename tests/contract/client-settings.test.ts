@@ -608,6 +608,114 @@ describe('契约测试: 设置卡片保存桥接 buildSettingsBridge（settingsS
       expect(ops).toContainEqual({ op: 'set', path: ['list_page_size'], value: 20 });
     });
 
+    it('0.2.2 ConfigForm.mutate 返回 true（含仅修改脱敏 secret 字段）时直接视为保存成功', async () => {
+      let currentRevision = 4;
+      const mutate = vi.fn(async () => {
+        currentRevision = 5;
+        return true;
+      });
+      const ctx = {
+        configForms: {
+          describe: () => ({
+            getSnapshot: () => ({
+              view: {
+                namespaces: [
+                  {
+                    ns,
+                    revision: currentRevision,
+                    // 脱敏后的 value 不含 app_secret 明文
+                    value: { app_id: '102000001' },
+                    base: {},
+                  },
+                ],
+              },
+            }),
+          }),
+          get: () => ({
+            mutate,
+            getSnapshot: () => ({
+              revision: currentRevision,
+              value: { app_id: '102000001' },
+            }),
+          }),
+        },
+      };
+
+      const bridge = buildSettingsBridge(ctx, ns);
+      const res = await bridge.onSaveSettings(
+        { app_id: '102000001', app_secret: 'new-secret-value' },
+        { expectedRevision: 4 },
+      );
+      expect(res).toEqual({ revision: 5 });
+      expect(mutate).toHaveBeenCalledTimes(1);
+    });
+
+    it('0.2.2 ConfigForm.mutate 返回 false 且 revision 未刷新时抛出拒绝错误（不误报冲突）', async () => {
+      const mutate = vi.fn(async () => false);
+      const ctx = {
+        configForms: {
+          describe: () => ({
+            getSnapshot: () => ({
+              view: {
+                namespaces: [{ ns, revision: 4, value: { list_page_size: 5 }, base: {} }],
+              },
+            }),
+          }),
+          get: () => ({
+            mutate,
+            getSnapshot: () => ({
+              revision: 4,
+              value: { list_page_size: 5 },
+            }),
+          }),
+        },
+      };
+
+      const bridge = buildSettingsBridge(ctx, ns);
+      await expect(
+        bridge.onSaveSettings({ list_page_size: 10 }, { expectedRevision: 4 }),
+      ).rejects.toThrow(zhCN.settings.errors.rejected);
+      expect(mutate).toHaveBeenCalledTimes(1);
+    });
+
+    it('0.2.2 ConfigForm.mutate 返回 false 后若 mirror 刷新了新 revision，自动重试一次并成功', async () => {
+      let currentRevision = 4;
+      const mutate = vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          currentRevision = 5;
+          return false;
+        })
+        .mockImplementationOnce(async () => {
+          currentRevision = 6;
+          return true;
+        });
+      const ctx = {
+        configForms: {
+          describe: () => ({
+            getSnapshot: () => ({
+              view: {
+                namespaces: [{ ns, revision: currentRevision, value: {}, base: {} }],
+              },
+            }),
+          }),
+          get: () => ({
+            mutate,
+            getSnapshot: () => ({
+              revision: currentRevision,
+              value: {},
+            }),
+          }),
+        },
+      };
+
+      const bridge = buildSettingsBridge(ctx, ns);
+      const res = await bridge.onSaveSettings({ list_page_size: 8 }, { expectedRevision: 4 });
+      expect(res).toEqual({ revision: 6 });
+      expect(mutate).toHaveBeenCalledTimes(2);
+      expect(mutate).toHaveBeenNthCalledWith(2, [{ op: 'set', path: ['list_page_size'], value: 8 }], 5);
+    });
+
     it('数值字段输入 0 时不能被判定为 falsy 而回退成默认值', () => {
       const model = new QqbotFormModel({
         initialValues: { stream_throttle_ms: 400 },

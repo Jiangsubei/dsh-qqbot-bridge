@@ -554,4 +554,36 @@ describe('契约: 审批与提问 QQ 卡片样式与按钮交互', () => {
       ],
     });
   });
+
+  it('approval/request 的 signal 中止时立即清理 pending 槽位并返回 cancelled（不吞后续普通消息）', async () => {
+    const h = makeHarness();
+    const ac = new AbortController();
+    const next = vi.fn(async () => 'unavailable' as const);
+    const pending = handlerOf(h, 'approval/request')(
+      { ...approvalReq(CONTROLLED_SESSION), signal: ac.signal },
+      next,
+    );
+    await waitFor(() => h.interactions.approval.hasPending(OPENID));
+
+    ac.abort(new Error('turn cancelled'));
+    await expect(pending).resolves.toBe('cancelled');
+    expect(h.interactions.approval.hasPending(OPENID)).toBe(false);
+    expect(h.interactions.approval.handle(OPENID, 'y')).toBe(false);
+  });
+
+  it('user-questions/request 的 signal 中止时立即清理 pending 槽位并拒绝（不吞后续普通消息）', async () => {
+    const h = makeHarness();
+    const ac = new AbortController();
+    const next = vi.fn(async () => ({ answers: [] }));
+    const pending = handlerOf(h, 'user-questions/request')(
+      { ...questionReq(CONTROLLED_SESSION), signal: ac.signal },
+      next,
+    );
+    await waitFor(() => h.interactions.question.hasPending(OPENID));
+
+    ac.abort(new Error('ASK_TIMED_OUT'));
+    await expect(pending).rejects.toThrow();
+    expect(h.interactions.question.hasPending(OPENID)).toBe(false);
+    expect(h.interactions.question.handle(OPENID, '1')).toBe(false);
+  });
 });

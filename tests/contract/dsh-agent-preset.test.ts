@@ -57,13 +57,17 @@ interface CtxProbe {
       setup?: (agentCtx: unknown, agent: AgentProbe) => Promise<void> | void;
     }): Promise<HandleProbe>;
   };
-  sessionProjections: { stateOf(session: unknown, key: string): unknown };
+  sessionProjections: {
+    snapshot(session: unknown, keys?: readonly string[]): { values: Record<string, unknown> };
+  };
   agentPresets: {
     /** 官方 `resolve(id?)`：`id` 缺省即部署默认 */
     resolve(id?: string): Promise<{ id: string }>;
     mount(agentCtx: unknown, id?: string): Promise<{ id: string }>;
     /** 官方 `composedPreset(agentCtx)`：该 live agent 真正加入的 preset id（读 scope 链） */
     composedPreset(agentCtx: unknown): string | undefined;
+    /** 官方 `presetForSession(session)`：0.2.2 替代 deprecated stateOf 的正式读取入口 */
+    presetForSession?(session: unknown): string | null;
   };
 }
 
@@ -246,8 +250,12 @@ describe('契约：agent preset 的会话记录与接管复原（真实 DSH 装�
     if (live === undefined) return;
     // ① durable header（`dsh-session/lib/index.js:1402`）
     expect(live.session.header.agentPreset).toBe(expected);
-    // ② `agentPreset` 投影 —— WebUI 标签唯一读的就是它（`dsh-client-ui-agent-preset/lib/client.js:191`）
-    expect(ctx.sessionProjections.stateOf(live.session, 'agentPreset')).toBe(expected);
+    // ② `agentPreset` 投影 —— 使用正式 API（不再触发 deprecated stateOf 警告）
+    expect(ctx.sessionProjections.snapshot(live.session, ['agentPreset']).values.agentPreset).toBe(expected);
+    const presets = ctx.get('agentPresets') as CtxProbe['agentPresets'];
+    if (typeof presets.presetForSession === 'function') {
+      expect(presets.presetForSession(live.session)).toBe(expected);
+    }
     // ③ 真正挂上去的组合（读 scope 链，不是读我们自己的字段）
     expect((ctx.get('agentPresets') as CtxProbe['agentPresets']).composedPreset(live.ctx)).toBe(expected);
   }

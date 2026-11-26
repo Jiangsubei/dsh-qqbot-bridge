@@ -588,4 +588,17 @@ describe('装配闭环：dsh-qqbot-bridge（真实 DSH 装配）', () => {
     expect(fake.acked).toContainEqual({ id: 'int-asm-1', code: 0 });
     void msgId;
   });
+
+  it('15) package.json engines 兼容 0.2.2-rc.5 与 Node >=24.9.0，且拒绝 0.2.1 旧版 DSH', async () => {
+    const manifest = JSON.parse(
+      await fsp.readFile(path.resolve(process.cwd(), 'package.json'), 'utf8'),
+    ) as { engines?: { node?: string; dsh?: string } };
+    expect(manifest.engines?.node).toBe('>=24.9.0');
+
+    const { evaluatePluginCompatibility } = await import('@deepseek-ai/dsh-app-boot');
+    expect(evaluatePluginCompatibility(manifest, undefined, '0.2.2-rc.5')).toBeUndefined();
+    const older = evaluatePluginCompatibility(manifest, undefined, '0.2.1-rc.5');
+    expect(older).toBeDefined();
+    expect(older?.requirements['engines.dsh']).toBeDefined();
+  });
 });

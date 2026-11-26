@@ -148,7 +148,37 @@ export function buildSettingsBridge(ctx: any, namespace: string = SETTINGS_NAMES
         throw err;
       }
 
-      // 1. If res returned an object (e.g. mock or RPC response)
+      // 1. If res returned a boolean (0.2.2 ConfigForm.mutate returns Promise<boolean>)
+      if (typeof res === 'boolean') {
+        if (res) {
+          const afterRow = readNamespace();
+          return { revision: afterRow?.revision ?? targetScope.getSnapshot?.().revision };
+        }
+        const freshRow = readNamespace();
+        const freshRev = freshRow?.revision ?? targetScope.getSnapshot?.().revision;
+        if (freshRev !== undefined && freshRev !== expectedRevision) {
+          const retryRes = await targetScope.mutate(ops, freshRev);
+          if (retryRes === true) {
+            return { revision: readNamespace()?.revision ?? targetScope.getSnapshot?.().revision };
+          }
+          if (retryRes && typeof retryRes === 'object') {
+            const retryOk = retryRes.ok ?? retryRes.result?.ok;
+            if (retryOk === false) {
+              const retryErr = retryRes.error || retryRes.result?.error;
+              throw new Error(retryErr?.message || t('settings.errors.rejected'));
+            }
+            return {
+              revision:
+                retryRes.value?.revision ??
+                retryRes.result?.value?.revision ??
+                readNamespace()?.revision,
+            };
+          }
+        }
+        throw new Error(t('settings.errors.rejected'));
+      }
+
+      // 2. If res returned an object (e.g. mock or RPC response)
       if (res && typeof res === 'object') {
         const isOk = res.ok ?? res.result?.ok;
         if (isOk === false) {
