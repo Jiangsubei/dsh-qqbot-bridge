@@ -36,6 +36,7 @@ import type {
 } from '../types/index.js';
 import { QqErrorCode } from '../types/index.js';
 import type { Logger } from '../utils/logger.js';
+import { isPassiveReplyLimitError, stripPassiveReplyFields } from './passive-fallback.js';
 import { MsgSeqSlotAllocator } from './stream.js';
 
 export interface QqMediaInput {
@@ -253,17 +254,28 @@ export class QqMediaSender implements MediaSender {
     const seq = options.msgSeq ?? (target.msgId ? this.allocSlot(target.msgId) : undefined);
     if (seq !== undefined) payload.msg_seq = seq;
     // 真机反馈（2026-09-15）：富媒体引用入站消息会干扰阅读 → **不再**下发 message_reference。
-    const first = await this.client.sendMessage(target.openid, payload);
-    if (first.ok || String(first.code) !== QqErrorCode.MESSAGE_DEDUPLICATED) return first;
+    let latest = await this.client.sendMessage(target.openid, payload);
+    if (latest.ok) return latest;
 
     // 真机 2026-09-15（额度探针轮）：同一 msg_id 上**并发首条**偶发 `40054005`，
     // 同一文件单独重发即成功 ⇒ 属可恢复的服务端去重。兜底设计：换一个**新**格重试一次。
     // 新格按定义未被占用，故重试安全；只重试一次，不掩盖其它真实失败。
-    // 无 `msgId`（主动消息）时没有槽位可换，直接如实返回失败。
-    if (!target.msgId) return first;
-    const retrySeq = this.allocSlot(target.msgId);
-    this.log.warn(`富媒体发送遇 40054005（msg_id=${target.msgId}），换 msg_seq=${retrySeq} 重试一次`);
-    return this.client.sendMessage(target.openid, { ...payload, msg_seq: retrySeq });
+    if (String(latest.code) === QqErrorCode.MESSAGE_DEDUPLICATED && target.msgId) {
+      const retrySeq = this.allocSlot(target.msgId);
+      this.log.warn(`富媒体发送遇 40054005（msg_id=${target.msgId}），换 msg_seq=${retrySeq} 重试一次`);
+      latest = await this.client.sendMessage(target.openid, { ...payload, msg_seq: retrySeq });
+      if (latest.ok) return latest;
+    }
+
+    // 被动回复超限或过期（40034128 / 40034005）→ 剥离 msg_id / msg_seq 降级为主动消息重试一次
+    if ((payload.msg_id || payload.event_id) && isPassiveReplyLimitError(latest)) {
+      this.log.warn(
+        `富媒体被动回复超限或已过期（code=${String(latest.code ?? '')}），剥离锚点降级为主动消息重试一次`,
+      );
+      return this.client.sendMessage(target.openid, stripPassiveReplyFields(payload));
+    }
+
+    return latest;
   }
 
   /** 清空 `file_info` 缓存（dispose 时调用） */

@@ -758,4 +758,77 @@ describe('qq/stream · 长正文不得被静默截断（真机缺陷回归，202
       }
     }
   });
+
+  it('被动回复超限/过期（40034128 / 40034005）→ 自动剥离锚点降级为主动消息重试一次', async () => {
+    const h = makeHarness({ throttleMs: 0 });
+    h.client.sendHandler = (payload) => {
+      if (payload.msg_id || payload.event_id) {
+        return { ok: false, status: 400, code: 40034128, message: '被动回复时间或次数超限' };
+      }
+      return { ok: true, status: 200, code: 0, body: { id: 'proactive-1' } };
+    };
+
+    const res = await h.manager.sendSerialized(h.target, {
+      msg_type: QQ_MSG_TYPE_MARKDOWN,
+      markdown: { content: '延迟到达的回复' },
+    });
+    expect(res.ok).toBe(true);
+    expect(h.client.sendCalls).toHaveLength(2);
+    expect(h.client.sendCalls[0]!.payload.msg_id).toBe(h.target.msgId);
+    expect(h.client.sendCalls[1]!.payload.msg_id).toBeUndefined();
+    expect(h.client.sendCalls[1]!.payload.event_id).toBeUndefined();
+    expect(h.client.sendCalls[1]!.payload.msg_seq).toBeUndefined();
+    expect(h.client.sendCalls[1]!.payload.markdown?.content).toBe('延迟到达的回复');
+  });
+
+  it('非被动限额错误（如 40054004）不触发主动降级；多片超限后后续片直接走主动', async () => {
+    const h = makeHarness({ throttleMs: 0 });
+    h.client.sendHandler = () => ({ ok: false, status: 400, code: 40054004, message: '无好友关系' });
+    const errRes = await h.manager.sendSerialized(h.target, {
+      msg_type: QQ_MSG_TYPE_MARKDOWN,
+      markdown: { content: '不会重试' },
+    });
+    expect(errRes.ok).toBe(false);
+    expect(h.client.sendCalls).toHaveLength(1);
+
+    // 多片超长正文：第 1 片遇 40034005 降级主动后，第 2 片直接走主动，不再撞死 msg_id
+    const h2 = makeHarness({ throttleMs: 0 });
+    h2.client.sendHandler = (payload) => {
+      if (payload.msg_id) return { ok: false, status: 400, code: 40034005, message: '回复消息 msg_id 已过期' };
+      return { ok: true, status: 200, code: 0, body: { id: 'proactive-ok' } };
+    };
+    const full = '填'.repeat(7000); // > 16 KiB → 2 片
+    const multiRes = await h2.manager.sendSerialized(h2.target, {
+      msg_type: QQ_MSG_TYPE_MARKDOWN,
+      markdown: { content: full },
+    });
+    expect(multiRes.ok).toBe(true);
+    expect(h2.client.sendCalls).toHaveLength(3); // 第1片被动失败 + 第1片主动成功 + 第2片直接主动成功
+    expect(h2.client.sendCalls[0]!.payload.msg_id).toBe(h2.target.msgId);
+    expect(h2.client.sendCalls[1]!.payload.msg_id).toBeUndefined();
+    expect(h2.client.sendCalls[2]!.payload.msg_id).toBeUndefined();
+  });
+
+  it('流式期间遇被动超限（40034128）→ 回退普通消息后再降级主动消息送达', async () => {
+    const h = makeHarness({ throttleMs: 0 });
+    h.client.streamHandler = () => ({
+      ok: false,
+      status: 400,
+      code: 40034128,
+      message: '被动回复时间或次数超限',
+    });
+    h.client.sendHandler = (payload) => {
+      if (payload.msg_id) return { ok: false, status: 400, code: 40034128, message: '被动回复时间或次数超限' };
+      return { ok: true, status: 200, code: 0, body: { id: 'proactive-fallback' } };
+    };
+
+    const handle = h.manager.open(h.target)!;
+    await handle.push('长耗时任务结果');
+    await handle.finish('长耗时任务结果');
+
+    expect(h.client.sendCalls).toHaveLength(2);
+    expect(h.client.sendCalls[0]!.payload.msg_id).toBe(h.target.msgId);
+    expect(h.client.sendCalls[1]!.payload.msg_id).toBeUndefined();
+    expect(h.client.sendCalls[1]!.payload.markdown?.content).toBe('长耗时任务结果');
+  });
 });

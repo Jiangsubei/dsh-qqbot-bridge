@@ -270,6 +270,10 @@ export const QqErrorCode = {
   PART_FINISH_PROXY_ERROR: '850012',
   /** 请求参数错误（E7 首轮：合并阶段因内容不完整触发） */
   INVALID_REQUEST: '40093006',
+  /** 被动回复 msg_id 已过期（文档明写：40034005） */
+  PASSIVE_REPLY_EXPIRED: '40034005',
+  /** 被动回复时间或次数超限（文档明写：40034128） */
+  PASSIVE_REPLY_LIMIT_EXCEEDED: '40034128',
   /** 消息被去重：同 `(msg_id, msg_seq)` 重复发送（E2 实测） */
   MESSAGE_DEDUPLICATED: '40054005',
   /** 无效 markdown content：`msg_type=2` 未带 markdown 字段（E4 实测） */

@@ -548,6 +548,23 @@ describe('QqMediaSender · 40054005 换格重试一次', () => {
     expect(res.ok).toBe(false);
     expect(sent).toHaveLength(1);
   });
+
+  it('被动回复超限/过期（40034128 / 40034005）→ 剥离 msg_id/msg_seq 降级主动重试一次（不重传文件）', async () => {
+    const { client, sent } = scriptedClient([
+      { ok: false, status: 400, code: '40034128', message: '被动回复时间或次数超限', body: {} },
+      succeeded(),
+    ]);
+    const sender = new QqMediaSender({ client, logger: silentLogger, defaultOpenid: TARGET.openid });
+
+    const res = await sender.send(TARGET, { bytes: randomBytes(64), filename: 'a.png', fileType: QQ_FILE_TYPE_IMAGE });
+
+    expect(res.ok).toBe(true);
+    expect(sent).toHaveLength(2);
+    expect(sent[0]!.payload.msg_id).toBe('msg-1');
+    expect(sent[1]!.payload.msg_id).toBeUndefined();
+    expect(sent[1]!.payload.msg_seq).toBeUndefined();
+    expect(sent[1]!.payload.media).toEqual({ file_info: 'file-info-rt' });
+  });
 });
 
 // ══════════════════════════ 入站：E8 附件下载落盘 ═══════════════════════════

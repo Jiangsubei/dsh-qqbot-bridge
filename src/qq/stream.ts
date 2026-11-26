@@ -28,6 +28,7 @@ import type {
   StreamManager,
 } from '../types/index.js';
 import { createLogger, type Logger } from '../utils/logger.js';
+import { sendWithProactiveFallback, stripPassiveReplyFields } from './passive-fallback.js';
 
 /** `input_state`：1 = 生成中（首片即时可见，E2-1） */
 export const QQ_STREAM_INPUT_STATE_GENERATING = 1;
@@ -324,24 +325,39 @@ export class QqStreamSession implements StreamHandle {
    */
   private async sendFallback(formatted: string): Promise<void> {
     if (!formatted) return;
+    let passiveExhausted = false;
     for (const part of this.markdown.splitByBytes(formatted, QQ_MESSAGE_MAX_BYTES)) {
-      const seq = this.msgId ? this.allocSlot(this.msgId) : undefined;
+      const seq = !passiveExhausted && this.msgId ? this.allocSlot(this.msgId) : undefined;
       const payload: QqSendMessagePayload = {
         msg_type: QQ_MSG_TYPE_MARKDOWN,
         markdown: { content: part },
-        ...(this.msgId ? { msg_id: this.msgId } : {}),
+        ...(!passiveExhausted && this.msgId ? { msg_id: this.msgId } : {}),
         ...(seq !== undefined ? { msg_seq: seq } : {}),
       };
       try {
-        const res = await this.client.sendMessage(this.openid, payload);
-        if (!res.ok) {
+        if (passiveExhausted) {
+          const res = await this.client.sendMessage(this.openid, stripPassiveReplyFields(payload));
+          if (!res.ok) {
+            this.logger.error(`[qq-stream] 降级主动消息仍失败: code=${String(res.code)} status=${res.status}`);
+          }
+          continue;
+        }
+        const { result, fellBack } = await sendWithProactiveFallback(
+          this.client,
+          this.openid,
+          payload,
+          this.logger,
+          '[qq-stream]',
+        );
+        if (fellBack) passiveExhausted = true;
+        if (!result.ok) {
           this.logger.error(
-            `[qq-stream] 回退普通消息仍失败: code=${String(res.code)} status=${res.status}`
+            `[qq-stream] 回退普通消息仍失败: code=${String(result.code)} status=${result.status}`,
           );
         }
       } catch (err) {
         this.logger.error(
-          `[qq-stream] 回退普通消息异常: ${err instanceof Error ? err.message : String(err)}`
+          `[qq-stream] 回退普通消息异常: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -492,22 +508,37 @@ export class QqStreamManager implements StreamManager {
       // 此处取保守 16 KiB；切出的每条各占一个 `msg_seq` 槽位（复用会被判 40054005 去重）。
       const parts = body ? this.markdown.splitByBytes(body, QQ_MESSAGE_MAX_BYTES) : [body];
       let result: QqApiResult = { ok: true, status: 200, body: null };
+      let passiveExhausted = false;
       for (const [i, part] of parts.entries()) {
         const seq =
-          i === 0 && payload.msg_seq !== undefined
-            ? payload.msg_seq
-            : slotKey
-              ? this.allocSlot(slotKey)
-              : undefined;
-        const outgoing: QqSendMessagePayload = {
+          passiveExhausted
+            ? undefined
+            : i === 0 && payload.msg_seq !== undefined
+              ? payload.msg_seq
+              : slotKey
+                ? this.allocSlot(slotKey)
+                : undefined;
+        const rawOutgoing: QqSendMessagePayload = {
           ...base,
           ...(isMarkdown ? { markdown: { content: part } } : { content: part }),
           ...(seq !== undefined ? { msg_seq: seq } : {}),
         };
-        if (outgoing.keyboard && i < parts.length - 1) {
-          delete outgoing.keyboard;
+        if (rawOutgoing.keyboard && i < parts.length - 1) {
+          delete rawOutgoing.keyboard;
         }
-        result = await this.client.sendMessage(target.openid, outgoing);
+        if (passiveExhausted) {
+          result = await this.client.sendMessage(target.openid, stripPassiveReplyFields(rawOutgoing));
+        } else {
+          const sent = await sendWithProactiveFallback(
+            this.client,
+            target.openid,
+            rawOutgoing,
+            this.logger,
+            '[qq-stream]',
+          );
+          result = sent.result;
+          if (sent.fellBack) passiveExhausted = true;
+        }
         if (!result.ok) return result; // 任一条失败即停，如实返回失败码（绝不静默吞掉）
       }
       return result;
