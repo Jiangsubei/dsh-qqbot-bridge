@@ -11,7 +11,7 @@
 import {
   QQ_API_BASE,
   QQ_BOT_TOKEN_URL,
-  QQ_INTENT_GROUP_AND_C2C_EVENT,
+  QQ_DEFAULT_INTENTS,
   QQ_MSG_TYPE_MARKDOWN,
   QQ_REQUEST_TIMEOUT_MS,
   QQ_TOKEN_REFRESH_MARGIN_MS,
@@ -23,10 +23,12 @@ import {
   type QqAccessTokenResponse,
   type QqC2CMessageEvent,
   type QqCredential,
+  type QqInteractionEvent,
 } from '../types/qq.js';
 import type {
   QqApiResult,
   QqClientLike,
+  QqInteractionHandler,
   QqMessageHandler,
   QqReadyHandler,
   QqSendMessagePayload,
@@ -111,6 +113,7 @@ export class QqClient implements QqClientLike {
   private isClosing = false;
 
   private messageHandler: QqMessageHandler | null = null;
+  private interactionHandler: QqInteractionHandler | null = null;
   private readyHandler: QqReadyHandler | null = null;
 
   constructor(options: QqClientOptions) {
@@ -268,6 +271,10 @@ export class QqClient implements QqClientLike {
           void Promise.resolve(this.messageHandler?.(payload.d as QqC2CMessageEvent)).catch((err: unknown) =>
             this.log.error(`onC2CMessage 处理失败：${errorMessage(err)}`)
           );
+        } else if (payload.t === 'INTERACTION_CREATE') {
+          void Promise.resolve(this.interactionHandler?.(payload.d as QqInteractionEvent)).catch((err: unknown) =>
+            this.log.error(`onInteraction 处理失败：${errorMessage(err)}`)
+          );
         }
         break;
       }
@@ -298,7 +305,7 @@ export class QqClient implements QqClientLike {
       op: QqOpCode.IDENTIFY,
       d: {
         token: `QQBot ${token}`,
-        intents: QQ_INTENT_GROUP_AND_C2C_EVENT,
+        intents: QQ_DEFAULT_INTENTS,
         properties: { os: process.platform, browser: 'dsh-qqbot-bridge', device: 'dsh-qqbot-bridge' },
       },
     });
@@ -404,35 +411,45 @@ export class QqClient implements QqClientLike {
   }
 
   /**
-   * POST JSON 到绝对 URL。**不抛错**：网络异常/超时 → `{ok:false,status:0}`。
+   * 发送 JSON（POST/PUT）到绝对 URL。**不抛错**：网络异常/超时 → `{ok:false,status:0}`。
    * 401 时强制刷新 token 并重试一次（Y1 缺口补充）。
    */
-  private async postJson(url: string, payload: unknown, allowAuthRetry = true): Promise<QqApiResult> {
+  private async sendJson(
+    method: 'POST' | 'PUT',
+    url: string,
+    payload: unknown,
+    allowAuthRetry = true,
+  ): Promise<QqApiResult> {
     const headers = await this.authHeader();
-    const res = await this.rawRequest(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+    const res = await this.rawRequest(url, { method, headers, body: JSON.stringify(payload) });
     if (res.status === 401 && allowAuthRetry) {
       this.log.warn('REST 401：强制刷新 access_token 后重试一次');
       this.invalidateToken();
-      return this.postJson(url, payload, false);
+      return this.sendJson(method, url, payload, false);
     }
     return toApiResult(res);
   }
 
   /** 通用 POST（相对 `/v2`），用于 `upload_prepare` / `upload_part_finish` / `files` */
   async apiPost(pathname: string, payload: unknown): Promise<QqApiResult> {
-    return this.postJson(`${QQ_API_BASE}${pathname}`, payload);
+    return this.sendJson('POST', `${QQ_API_BASE}${pathname}`, payload);
+  }
+
+  /** 互动事件回执（`PUT /interactions/{id}`，code=0 成功；实测 K4） */
+  async acknowledgeInteraction(interactionId: string, code = 0): Promise<QqApiResult> {
+    return this.sendJson('PUT', `${QQ_API_BASE}/interactions/${encodeURIComponent(interactionId)}`, { code });
   }
 
   /** 发送单聊消息（`POST /v2/users/{openid}/messages`）；E4 约束在发送前本地校验并归一 */
   async sendMessage(openid: string, payload: QqSendMessagePayload): Promise<QqApiResult> {
     const prepared = normalizeMarkdownPayload(payload);
     if (prepared.error) return prepared.error;
-    return this.postJson(`${QQ_API_BASE}/v2/users/${encodeURIComponent(openid)}/messages`, prepared.payload);
+    return this.sendJson('POST', `${QQ_API_BASE}/v2/users/${encodeURIComponent(openid)}/messages`, prepared.payload);
   }
 
   /** 流式发送单聊消息（`POST /v2/users/{openid}/stream_messages`）——失败也作为数据返回（E2） */
   async sendStreamMessage(openid: string, payload: QqStreamMessagePayload): Promise<QqApiResult> {
-    return this.postJson(`${QQ_API_BASE}/v2/users/${encodeURIComponent(openid)}/stream_messages`, payload);
+    return this.sendJson('POST', `${QQ_API_BASE}/v2/users/${encodeURIComponent(openid)}/stream_messages`, payload);
   }
 
   /** 分片 PUT 到预签名 URL（E7-7 实测：裸 PUT + 二进制 body，无需任何附加 header） */
@@ -453,6 +470,10 @@ export class QqClient implements QqClientLike {
 
   onC2CMessage(handler: QqMessageHandler): void {
     this.messageHandler = handler;
+  }
+
+  onInteraction(handler: QqInteractionHandler): void {
+    this.interactionHandler = handler;
   }
 
   onReady(handler: QqReadyHandler): void {

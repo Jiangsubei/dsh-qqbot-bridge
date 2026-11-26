@@ -32,6 +32,7 @@
  *   - 待决期间**任何**入站消息都被本层消费（不转发给 agent——agent 正阻塞等这个答案）。
  */
 
+import { randomUUID } from 'node:crypto';
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval';
 import type {
   AskUserQuestionAnswer,
@@ -39,15 +40,34 @@ import type {
   AskUserQuestionRequest,
 } from '@deepseek-ai/dsh-user-questions';
 
-import type { PendingInteraction } from '../types/index.js';
+import type { OutboundTarget, PendingInteraction, QqInlineKeyboard, QqInteractionEvent } from '../types/index.js';
 import type { Logger } from '../utils/logger.js';
 import { t } from '../i18n/index.js';
+import {
+  buildApprovalCard,
+  buildQuestionCard,
+  decodeButtonData,
+  formatCommandFromArguments,
+  type InteractionCardPayload,
+} from './card-renderer.js';
 
 export type { ApprovalOutcome };
+
+export interface InteractionSendCardResult {
+  ok: boolean;
+  code?: string | number;
+  message?: string;
+}
 
 export interface InteractionDeps {
   /** 发一条纯文本消息（经 per-peer 串行队列；D34） */
   sendText(openid: string, text: string): Promise<void>;
+  /** 可选：发送 Markdown 卡片与内联按钮；缺省时自动降级到 `sendText` */
+  sendCard?(
+    openid: string,
+    card: { markdown: string; keyboard?: QqInlineKeyboard },
+    targetOverride?: OutboundTarget,
+  ): Promise<InteractionSendCardResult>;
   /**
    * 反查：该 session **当前**是否正被某个 openid 远程受控；返回 `undefined` = 非受控
    * （⇒ 一律 `next()` 委派给 WebUI）。
@@ -64,14 +84,23 @@ export interface InteractionDeps {
 }
 
 const DEFAULT_TIMEOUT_MS = 300_000;
+const MAX_TOOL_CALL_CACHE = 200;
 
 const APPROVE_WORDS = new Set(['y', 'yes', '是', '允许', '同意', '批准', '1', '好', '可以']);
 const REJECT_WORDS = new Set(['n', 'no', '否', '拒绝', '不同意', '2', '不']);
 const CANCEL_WORDS = new Set(['/取消', '/cancel', '取消']);
 
+interface PendingResolution {
+  raw: string;
+  /** 按钮点击触发时带回的互动事件锚点（`INTERACTION_CREATE:<id>`） */
+  eventId?: string;
+}
+
 interface Pending {
   openid: string;
-  resolve: (raw: string) => void;
+  nonce: string;
+  optionCount?: number;
+  resolve: (res: PendingResolution) => void;
   timer: NodeJS.Timeout;
 }
 
@@ -88,32 +117,61 @@ class PendingSlot implements PendingInteraction {
     return this.current.has(openid);
   }
 
-  /** 入站消息被本层消费（返回 true 即 pipeline 不再往下走） */
+  /** 入站文本消息被本层消费（返回 true 即 pipeline 不再往下走） */
   handle(openid: string, text: string): boolean {
     const pending = this.current.get(openid);
     if (!pending) return false;
     clearTimeout(pending.timer);
     this.current.delete(openid);
-    pending.resolve(text);
+    pending.resolve({ raw: text });
+    return true;
+  }
+
+  /** 按钮回调消费待决交互；nonce 不匹配或选项越界一律忽略 */
+  handleButton(openid: string, nonce: string, value: string, optionIndex?: number, eventId?: string): boolean {
+    const pending = this.current.get(openid);
+    if (!pending || pending.nonce !== nonce) return false;
+    if (
+      optionIndex !== undefined &&
+      pending.optionCount !== undefined &&
+      (optionIndex < 0 || optionIndex >= pending.optionCount)
+    ) {
+      return false;
+    }
+    clearTimeout(pending.timer);
+    this.current.delete(openid);
+    pending.resolve({ raw: value, ...(eventId ? { eventId } : {}) });
     return true;
   }
 
   /** 登记一次待决；新请求顶掉旧请求（旧的 fail-closed） */
-  async wait(openid: string, timeoutMs: number, logger: Logger): Promise<string> {
+  async wait(
+    openid: string,
+    timeoutMs: number,
+    logger: Logger,
+    nonce: string,
+    optionCount?: number,
+  ): Promise<PendingResolution> {
     const previous = this.current.get(openid);
     if (previous) {
       clearTimeout(previous.timer);
       this.current.delete(openid);
       logger.warn(`[${this.kind}] openid=${openid.slice(0, 8)}… 已有待决交互，旧请求被新请求顶掉`);
-      previous.resolve(this.kind === 'approval' ? '__superseded__' : '__cancel__');
+      previous.resolve({ raw: this.kind === 'approval' ? '__superseded__' : '__cancel__' });
     }
-    return new Promise<string>((resolve) => {
+    return new Promise<PendingResolution>((resolve) => {
       const timer = setTimeout(() => {
         this.current.delete(openid);
         logger.warn(`[${this.kind}] openid=${openid.slice(0, 8)}… 等待超时（${timeoutMs}ms），fail-closed`);
-        resolve('__timeout__');
+        resolve({ raw: '__timeout__' });
       }, timeoutMs);
-      this.current.set(openid, { openid, resolve, timer });
+      this.current.set(openid, {
+        openid,
+        nonce,
+        ...(optionCount === undefined ? {} : { optionCount }),
+        resolve,
+        timer,
+      });
     });
   }
 
@@ -121,7 +179,7 @@ class PendingSlot implements PendingInteraction {
   clear(): void {
     for (const [, p] of this.current) {
       clearTimeout(p.timer);
-      p.resolve('__cancel__');
+      p.resolve({ raw: '__cancel__' });
     }
     this.current.clear();
   }
@@ -132,6 +190,7 @@ export class QqInteractions {
   private readonly timeoutMs: number;
   private readonly approvalSlot = new PendingSlot('approval');
   private readonly questionSlot = new PendingSlot('question');
+  private readonly toolCallArgs = new Map<string, string>();
 
   /** 供 `InboundDeps` 注入的两层 */
   readonly approval: PendingInteraction = {
@@ -146,6 +205,34 @@ export class QqInteractions {
   constructor(deps: InteractionDeps) {
     this.deps = deps;
     this.timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  /** 记录最近 `tool/call` 的原始参数，供审批卡片回显命令原文 */
+  recordToolCall(callId: string, argumentsRaw: string): void {
+    if (!callId || !argumentsRaw) return;
+    if (this.toolCallArgs.has(callId)) this.toolCallArgs.delete(callId);
+    this.toolCallArgs.set(callId, argumentsRaw);
+    while (this.toolCallArgs.size > MAX_TOOL_CALL_CACHE) {
+      const oldest = this.toolCallArgs.keys().next().value;
+      if (oldest === undefined) break;
+      this.toolCallArgs.delete(oldest);
+    }
+  }
+
+  /** 处理 QQ `INTERACTION_CREATE` 按钮回调；返回 true 表示命中并消费 */
+  handleInteraction(event: QqInteractionEvent): boolean {
+    const openid = event.user_openid ?? '';
+    const rawData = event.data?.resolved?.button_data;
+    if (!openid || !rawData) return false;
+    const button = decodeButtonData(rawData);
+    if (!button) return false;
+
+    if (button.t === 'approval') {
+      return this.approvalSlot.handleButton(openid, button.n, button.d === 'allow' ? 'y' : 'n');
+    }
+    if (button.i < 0) return false;
+    const eventId = event.id ? `INTERACTION_CREATE:${event.id}` : undefined;
+    return this.questionSlot.handleButton(openid, button.q, String(button.i + 1), button.i, eventId);
   }
 
   /**
@@ -187,6 +274,51 @@ export class QqInteractions {
     return id === undefined ? undefined : String(id);
   }
 
+  /** 统一投递卡片：优先 sendCard（带按钮失败则降级无按钮 Markdown），未注入 sendCard 时走 sendText */
+  private async deliverCard(
+    openid: string,
+    card: InteractionCardPayload,
+    targetOverride?: OutboundTarget,
+  ): Promise<void> {
+    if (!this.deps.sendCard) {
+      await this.deps.sendText(openid, card.fallbackMarkdown ?? card.markdown);
+      return;
+    }
+    const res = await this.deps.sendCard(
+      openid,
+      { markdown: card.markdown, ...(card.keyboard ? { keyboard: card.keyboard } : {}) },
+      targetOverride,
+    );
+    if (!res.ok && card.keyboard) {
+      this.deps.logger.warn(
+        `[interactions] 带按钮卡片发送失败（code=${String(res.code ?? '')} ${res.message ?? ''}），降级无按钮 Markdown`,
+      );
+      await this.deps.sendCard(
+        openid,
+        { markdown: card.fallbackMarkdown ?? card.markdown },
+        targetOverride,
+      );
+    }
+  }
+
+  private resolveApprovalCommand(req: ApprovalRequest): string | undefined {
+    const callId = req.callId === undefined ? undefined : String(req.callId);
+    if (callId) {
+      const cached = this.toolCallArgs.get(callId);
+      if (cached !== undefined) return formatCommandFromArguments(cached);
+    }
+    // 兼容仅挂载 session.snapshotEvents 的历史测试桩
+    const snap = (req.agent as { session?: { snapshotEvents?: () => ReadonlyArray<{ type?: string; data?: { callId?: unknown; arguments?: unknown } }> } } | undefined)?.session?.snapshotEvents?.();
+    if (!Array.isArray(snap) || !callId) return undefined;
+    for (let i = snap.length - 1; i >= 0; i -= 1) {
+      const ev = snap[i];
+      if (ev?.type === 'tool/call' && String(ev.data?.callId) === callId && typeof ev.data?.arguments === 'string') {
+        return formatCommandFromArguments(ev.data.arguments);
+      }
+    }
+    return undefined;
+  }
+
   // ─────────────────────────── 审批 ───────────────────────────
 
   private async onApproval(req: ApprovalRequest, next: () => Promise<ApprovalOutcome>): Promise<ApprovalOutcome> {
@@ -197,21 +329,27 @@ export class QqInteractions {
     if (this.deps.ownTurn !== undefined && !this.deps.ownTurn(sessionId)) return next();
 
     const tool = req?.toolName ?? t('interactions.approval.toolUnknown');
-    const reason = req?.reason ? t('interactions.approval.reason', { reason: req.reason }) : '';
-    await this.deps.sendText(
-      openid,
-      t('interactions.approval.prompt', { tool, reason }),
-    );
+    const reasonText = req?.reason?.trim() || undefined;
+    const command = this.resolveApprovalCommand(req);
+    const nonce = randomUUID().replace(/-/g, '').slice(0, 8);
+    const card = buildApprovalCard({
+      tool,
+      ...(reasonText ? { reason: reasonText } : {}),
+      ...(command ? { command } : {}),
+      nonce,
+    });
+    await this.deliverCard(openid, card);
 
-    let raw: string;
+    let resolution: PendingResolution;
     try {
-      raw = await this.approvalSlot.wait(openid, this.timeoutMs, this.deps.logger);
+      resolution = await this.approvalSlot.wait(openid, this.timeoutMs, this.deps.logger, nonce);
     } catch (err: unknown) {
       this.deps.logger.error('审批等待异常', err);
       return 'unavailable';
     }
     if (req?.signal?.aborted) return 'cancelled';
 
+    const raw = resolution.raw;
     const verdict = raw.trim().toLowerCase();
     if (verdict === '__timeout__' || verdict === '__superseded__') {
       await this.deps.sendText(openid, t('interactions.approval.timeout'));
@@ -251,40 +389,29 @@ export class QqInteractions {
     if (this.deps.ownTurn !== undefined && !this.deps.ownTurn(sessionId)) return next();
 
     const answers: AskUserQuestionAnswer['answers'] = [];
+    let nextTargetOverride: OutboundTarget | undefined;
     // 多问题逐条串行提问（聊天场景下比一次性列全部更可读）
     for (let i = 0; i < questions.length; i++) {
       const q = questions[i]!;
       const options = Array.isArray(q.options) ? q.options : [];
-      const lines = [`${q.header ? `[${q.header}] ` : ''}${q.question}`];
-      if (q.detail) lines.push(q.detail);
-      if (options.length > 0) {
-        lines.push('');
-        options.forEach((o, idx) => {
-          const row = t('interactions.question.optionLine', { index: idx + 1, label: o.label });
-          lines.push(
-            o.description
-              ? `${row}${t('interactions.question.optionDesc', { description: o.description })}`
-              : row,
-          );
-        });
-        lines.push('');
-        lines.push(
-          q.multiSelect
-            ? t('interactions.question.hintMulti')
-            : t('interactions.question.hintSingle'),
-        );
-      }
-      if (questions.length > 1) {
-        lines.push(
-          t('interactions.question.hintMultiQuestion', { index: i + 1, total: questions.length }),
-        );
-      } else {
-        lines.push(t('interactions.question.hintSingleQuestion'));
-      }
-      await this.deps.sendText(openid, lines.join('\n'));
+      const nonce = randomUUID().replace(/-/g, '').slice(0, 8);
+      const card = buildQuestionCard({
+        question: q,
+        index: i,
+        total: questions.length,
+        nonce,
+      });
+      await this.deliverCard(openid, card, nextTargetOverride);
 
-      const raw = await this.questionSlot.wait(openid, this.timeoutMs, this.deps.logger);
-      const text = raw.trim();
+      const resolution = await this.questionSlot.wait(
+        openid,
+        this.timeoutMs,
+        this.deps.logger,
+        nonce,
+        options.length > 0 ? options.length : undefined,
+      );
+      nextTargetOverride = resolution.eventId ? { openid, eventId: resolution.eventId } : undefined;
+      const text = resolution.raw.trim();
 
       if (text === '__timeout__' || text === '__cancel__' || CANCEL_WORDS.has(text.toLowerCase())) {
         await this.deps.sendText(openid, t('interactions.question.cancelled'));

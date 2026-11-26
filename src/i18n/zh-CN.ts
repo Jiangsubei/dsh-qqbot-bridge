@@ -219,6 +219,15 @@ export const zhCN = {
   interactions: {
     approval: {
       prompt: '需要你批准一次操作\n工具：{{tool}}{{reason}}\n\n回复 y 允许（仅本次）／n 拒绝',
+      cardTitle: '**执行审批**',
+      cardTool: '工具：`{{tool}}`',
+      cardReason: '原因：{{reason}}',
+      cardHintButtons: '> 点击下方按钮确认，或回复 y 允许（仅本次）／n 拒绝',
+      cardHintText: '> 回复 y 允许（仅本次）／n 拒绝（或 /取消）',
+      btnAllow: '允许一次',
+      btnAllowVisited: '已允许',
+      btnDeny: '拒绝',
+      btnDenyVisited: '已拒绝',
       toolUnknown: '未知工具',
       reason: '\n原因：{{reason}}',
       timeout: '审批已超时（自动拒绝）',
@@ -230,6 +239,9 @@ export const zhCN = {
     question: {
       optionLine: '{{index}}. {{label}}',
       optionDesc: ' —— {{description}}',
+      multiSelectSuffix: '（可多选）',
+      btnVisited: '已选',
+      hintButtons: '> 点击下方按钮选择，或回复序号／自定义文本',
       hintSingle: '回复序号即可；也可直接回复自定义文本',
       hintMulti: '回复序号（多选用逗号，如 1,3）；也可直接回复自定义文本',
       hintMultiQuestion: '（第 {{index}}/{{total}} 问，回复 /跳过 跳过、/取消 放弃）',

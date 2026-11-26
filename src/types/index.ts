@@ -15,6 +15,7 @@ import type {
   QqC2CMessageEvent,
   QqCredential,
   QqFileUploadResponse,
+  QqInteractionEvent,
   QqReadyInfo,
   QqSendMessagePayload,
   QqStreamMessagePayload,
@@ -66,6 +67,7 @@ export interface QqApiResult {
 }
 
 export type QqMessageHandler = (event: QqC2CMessageEvent) => void | Promise<void>;
+export type QqInteractionHandler = (event: QqInteractionEvent) => void | Promise<void>;
 export type QqReadyHandler = (info: QqReadyInfo) => void | Promise<void>;
 
 /**
@@ -78,9 +80,12 @@ export interface QqClientLike {
   getAccessToken(): Promise<string>;
   authHeader(): Promise<Record<string, string>>;
   onC2CMessage(handler: QqMessageHandler): void;
+  onInteraction?(handler: QqInteractionHandler): void;
   onReady(handler: QqReadyHandler): void;
   sendMessage(openid: string, payload: QqSendMessagePayload): Promise<QqApiResult>;
   sendStreamMessage(openid: string, payload: QqStreamMessagePayload): Promise<QqApiResult>;
+  /** 互动事件回执（`PUT /interactions/{id}`，code=0 成功） */
+  acknowledgeInteraction?(interactionId: string, code?: number): Promise<QqApiResult>;
   /** 通用 POST（相对 `/v2`），用于 `upload_prepare` / `upload_part_finish` / `files` */
   apiPost(pathname: string, payload: unknown): Promise<QqApiResult>;
   /** 分片 PUT 到预签名 URL（裸 PUT，无需额外 header——E7-7 实测） */
@@ -96,6 +101,8 @@ export interface OutboundTarget {
   openid: string;
   /** 被动回复消息 ID */
   msgId?: string;
+  /** 互动事件回复锚点（形如 `INTERACTION_CREATE:<id>`，实测 K4） */
+  eventId?: string;
 }
 
 /**

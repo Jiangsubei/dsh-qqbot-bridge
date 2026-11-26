@@ -482,8 +482,10 @@ export class QqStreamManager implements StreamManager {
         }
       }
       await this.endActive(target.openid);
-      const msgId = payload.msg_id ?? target.msgId;
-      const base = this.normalizePayload(payload, msgId, payload.msg_seq);
+      const eventId = payload.event_id ?? (!payload.msg_id && target.eventId ? target.eventId : undefined);
+      const msgId = eventId ? undefined : (payload.msg_id ?? target.msgId);
+      const slotKey = eventId ?? msgId;
+      const base = this.normalizePayload(payload, msgId, eventId, payload.msg_seq);
       const isMarkdown = base.msg_type === QQ_MSG_TYPE_MARKDOWN;
       const body = ((isMarkdown ? base.markdown?.content : base.content) ?? '') as string;
       // D50：非流式单条也按字节上限切条——【实测 E3】单条 markdown ≥32000 字符（96 KB）未触限，
@@ -494,14 +496,17 @@ export class QqStreamManager implements StreamManager {
         const seq =
           i === 0 && payload.msg_seq !== undefined
             ? payload.msg_seq
-            : msgId
-              ? this.allocSlot(msgId)
+            : slotKey
+              ? this.allocSlot(slotKey)
               : undefined;
         const outgoing: QqSendMessagePayload = {
           ...base,
           ...(isMarkdown ? { markdown: { content: part } } : { content: part }),
           ...(seq !== undefined ? { msg_seq: seq } : {}),
         };
+        if (outgoing.keyboard && i < parts.length - 1) {
+          delete outgoing.keyboard;
+        }
         result = await this.client.sendMessage(target.openid, outgoing);
         if (!result.ok) return result; // 任一条失败即停，如实返回失败码（绝不静默吞掉）
       }
@@ -516,14 +521,20 @@ export class QqStreamManager implements StreamManager {
     if (this.streams.get(openid) === session) this.streams.delete(openid);
   }
 
-  /** 出站报文规整：补 `msg_id`/`msg_seq`；`msg_type=2` 时只发 `markdown`（E4） */
+  /** 出站报文规整：补 `msg_id`/`event_id`/`msg_seq`；`msg_type=2` 时只发 `markdown`（E4） */
   private normalizePayload(
     payload: QqSendMessagePayload,
     msgId: string | undefined,
+    eventId: string | undefined,
     seq: number | undefined
   ): QqSendMessagePayload {
     const outgoing: QqSendMessagePayload = { ...payload };
-    if (msgId !== undefined) outgoing.msg_id = msgId;
+    if (eventId !== undefined) {
+      outgoing.event_id = eventId;
+      delete outgoing.msg_id;
+    } else if (msgId !== undefined) {
+      outgoing.msg_id = msgId;
+    }
     if (seq !== undefined) outgoing.msg_seq = seq;
 
     if (outgoing.msg_type === QQ_MSG_TYPE_MARKDOWN) {

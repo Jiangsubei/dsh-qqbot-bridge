@@ -103,6 +103,63 @@ export interface QqC2CMessageEvent {
   msg_elements?: unknown[];
 }
 
+/** 消息按钮渲染属性 */
+export interface QqButtonRenderData {
+  label: string;
+  visited_label?: string;
+  style?: number;
+}
+
+/** 消息按钮行为定义 */
+export interface QqButtonAction {
+  type: number;
+  permission: { type: number; specify_user_ids?: string[] };
+  click_limit?: number;
+  unsupport_tips?: string;
+  data?: string;
+}
+
+/** 自定义消息按钮 */
+export interface QqKeyboardButton {
+  id?: string;
+  render_data: QqButtonRenderData;
+  action: QqButtonAction;
+  /** 实测 K2：存在隐性长度限制（21 字符报 40011021，≤14 字符可用） */
+  group_id?: string;
+}
+
+/** 按钮行 */
+export interface QqKeyboardRow {
+  buttons: QqKeyboardButton[];
+}
+
+/** 内联消息按钮键盘 */
+export interface QqInlineKeyboard {
+  id?: string;
+  content?: {
+    rows: QqKeyboardRow[];
+  };
+}
+
+/** 互动回调事件（`INTERACTION_CREATE`，需订阅 `1 << 26` intent） */
+export interface QqInteractionEvent {
+  id: string;
+  type?: number;
+  chat_type?: number;
+  scene?: string;
+  user_openid?: string;
+  group_openid?: string;
+  group_member_openid?: string;
+  timestamp?: string;
+  data?: {
+    type?: number;
+    resolved?: {
+      button_id?: string;
+      button_data?: string;
+    };
+  };
+}
+
 // ───────────────────────── 出站消息 ─────────────────────────
 
 /**
@@ -117,6 +174,8 @@ export interface QqSendMessagePayload {
   content?: string;
   /** `msg_type=2` 时必填 */
   markdown?: { content: string };
+  /** 可选：消息内联按钮（实测 K1：`msg_type=2` 单聊可直接附带） */
+  keyboard?: QqInlineKeyboard;
   /** `msg_type=6` 输入中状态 */
   input_notify?: { input_type: 1; input_second: number };
   /** `msg_type=7` 富媒体 */

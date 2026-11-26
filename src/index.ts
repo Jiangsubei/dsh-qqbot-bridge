@@ -22,7 +22,7 @@ import * as os from 'node:os';
 
 import { Context } from '@deepseek-ai/cordis';
 
-import { PLUGIN_NAME, QQ_MSG_TYPE_TEXT } from './constants/index.js';
+import { PLUGIN_NAME, QQ_MSG_TYPE_MARKDOWN, QQ_MSG_TYPE_TEXT } from './constants/index.js';
 import { PluginConfigSchema } from './config/schema.js';
 import { resolveCredentials, resolveDshHome } from './config/credentials.js';
 import { migrateLegacyConfig, readLegacyConfig } from './config/migrate.js';
@@ -311,11 +311,40 @@ async function createWiring(
       );
       return reply({ openid }, text);
     },
+    sendCard: async (openid, card, targetOverride) => {
+      const target = targetOverride ?? resolveTarget(openid);
+      const resolved: OutboundTarget = target?.eventId || target?.msgId ? target : { openid };
+      if (!resolved.eventId && !resolved.msgId) {
+        logger.warn(
+          `[interactions] openid=${openid.slice(0, 8)}… 无入站锚点，降级为主动消息投递交互卡片`,
+        );
+      }
+      return streams.sendSerialized(resolved, {
+        msg_type: QQ_MSG_TYPE_MARKDOWN,
+        markdown: { content: card.markdown },
+        ...(card.keyboard ? { keyboard: card.keyboard } : {}),
+      });
+    },
     controlledBy: (sessionId) => control.findControlOwner(sessionId),
     ownTurn: isOwnTurn,
     logger,
   });
   disposers.push(interactions.attach(ctx));
+
+  const offToolCall = eventCtx.on('session/event', (...args: unknown[]) => {
+    const event = args[1] as
+      | { type?: string; data?: { callId?: unknown; arguments?: unknown } }
+      | undefined;
+    if (event?.type !== 'tool/call') return;
+    const callId = event.data?.callId;
+    const rawArgs = event.data?.arguments;
+    if (typeof callId === 'string' && typeof rawArgs === 'string') {
+      interactions.recordToolCall(callId, rawArgs);
+    }
+  });
+  disposers.push(() => {
+    if (typeof offToolCall === 'function') (offToolCall as () => void)();
+  });
 
   // ── 5. 命令层 + 入站管线（使用 getter 函数动态获取当前配置） ──
   const paging = createPagingStore();
@@ -445,6 +474,13 @@ async function createWiring(
       const message = err instanceof Error ? err.message : String(err);
       await reply({ openid, msgId }, t('inbound.handlingFailed', { message })).catch(() => undefined);
     }
+  });
+
+  client.onInteraction?.(async (event) => {
+    const matched = interactions.handleInteraction(event);
+    await client.acknowledgeInteraction?.(event.id, matched ? 0 : 3).catch((err: unknown) => {
+      logger.warn('acknowledgeInteraction 失败', err);
+    });
   });
 
   client.onReady((info) => {

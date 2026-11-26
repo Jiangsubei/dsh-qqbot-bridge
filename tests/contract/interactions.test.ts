@@ -374,3 +374,184 @@ describe('契约: 回合归属（D49）', () => {
     await expect(pending).resolves.toBe('allowed-once');
   });
 });
+
+// ════════════════════ QQ 卡片样式 + 内联按钮 + 降级兜底 ════════════════════
+
+describe('契约: 审批与提问 QQ 卡片样式与按钮交互', () => {
+  it('审批走 sendCard 下发 Markdown（含命令代码块）+ 短 group_id 按钮；点击按钮通过 nonce 批准', async () => {
+    const sendText = vi.fn(async () => {});
+    const sendCard = vi.fn(async () => ({ ok: true }));
+    const controlledBy = vi.fn((id: string) => (id === CONTROLLED_SESSION ? OPENID : undefined));
+    const handlers = new Map<string, Handler>();
+    const interactions = new QqInteractions({ sendText, sendCard, controlledBy, logger });
+    interactions.attach({
+      on: (event, handler) => {
+        handlers.set(event, handler);
+        return () => handlers.delete(event);
+      },
+    });
+    interactions.recordToolCall('call-42', JSON.stringify({ command: 'pnpm test' }));
+
+    const pending = handlers.get('approval/request')!(
+      { agent: { session: { id: CONTROLLED_SESSION } }, toolName: 'bash', callId: 'call-42', reason: '运行测试' },
+      vi.fn(),
+    );
+    await waitFor(() => interactions.approval.hasPending(OPENID));
+
+    expect(sendCard).toHaveBeenCalledTimes(1);
+    const card = (sendCard.mock.calls[0] as unknown[])[1] as {
+      markdown: string;
+      keyboard?: { content?: { rows?: Array<{ buttons: Array<{ action: { data?: string }; group_id?: string }> }> } };
+    };
+    expect(card.markdown).toContain('bash');
+    expect(card.markdown).toContain('```');
+    expect(card.markdown).toContain('pnpm test');
+    const buttons = card.keyboard?.content?.rows?.[0]?.buttons ?? [];
+    expect(buttons).toHaveLength(2);
+    // 实测 K2：group_id 必须简短（≤ 16 字符），避免 40011021
+    for (const btn of buttons) {
+      expect((btn.group_id ?? '').length).toBeLessThanOrEqual(16);
+      expect((btn.group_id ?? '').length).toBeGreaterThan(0);
+    }
+
+    // 错 nonce 或错 openid 的点击一律忽略
+    expect(
+      interactions.handleInteraction({
+        id: 'evt-wrong-nonce',
+        user_openid: OPENID,
+        data: { resolved: { button_data: JSON.stringify({ t: 'approval', d: 'allow', n: 'stale' }) } },
+      }),
+    ).toBe(false);
+    expect(
+      interactions.handleInteraction({
+        id: 'evt-wrong-user',
+        user_openid: 'stranger',
+        data: { resolved: { button_data: buttons[0]!.action.data } },
+      }),
+    ).toBe(false);
+
+    // 正确点击「允许一次」
+    expect(
+      interactions.handleInteraction({
+        id: 'evt-ok',
+        user_openid: OPENID,
+        data: { resolved: { button_data: buttons[0]!.action.data } },
+      }),
+    ).toBe(true);
+    await expect(pending).resolves.toBe('allowed-once');
+  });
+
+  it('带 keyboard 发送失败时自动降级无按钮 Markdown，且仍保留 y/n 文本回复', async () => {
+    const sendText = vi.fn(async () => {});
+    const sendCard = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, code: 40011021, message: 'invalid keyboard' })
+      .mockResolvedValue({ ok: true });
+    const controlledBy = vi.fn((id: string) => (id === CONTROLLED_SESSION ? OPENID : undefined));
+    const handlers = new Map<string, Handler>();
+    const interactions = new QqInteractions({ sendText, sendCard, controlledBy, logger });
+    interactions.attach({
+      on: (event, handler) => {
+        handlers.set(event, handler);
+        return () => handlers.delete(event);
+      },
+    });
+
+    const pending = handlers.get('approval/request')!(approvalReq(CONTROLLED_SESSION), vi.fn());
+    await waitFor(() => interactions.approval.hasPending(OPENID));
+
+    expect(sendCard).toHaveBeenCalledTimes(2);
+    const secondPayload = (sendCard.mock.calls[1] as unknown[])[1] as { markdown: string; keyboard?: unknown };
+    expect(secondPayload.keyboard).toBeUndefined();
+    expect(secondPayload.markdown).toContain('Bash');
+
+    expect(interactions.approval.handle(OPENID, 'n')).toBe(true);
+    await expect(pending).resolves.toBe('rejected');
+  });
+
+  it('提问单选发 2 列按钮（标签≤10字），点击第 1 题按钮推进第 2 题并携带 eventId；多选不带按钮', async () => {
+    const sendText = vi.fn(async () => {});
+    const sendCard = vi.fn(async () => ({ ok: true }));
+    const controlledBy = vi.fn((id: string) => (id === CONTROLLED_SESSION ? OPENID : undefined));
+    const handlers = new Map<string, Handler>();
+    const interactions = new QqInteractions({ sendText, sendCard, controlledBy, logger });
+    interactions.attach({
+      on: (event, handler) => {
+        handlers.set(event, handler);
+        return () => handlers.delete(event);
+      },
+    });
+
+    const req = {
+      agent: { session: { id: CONTROLLED_SESSION } },
+      questions: [
+        {
+          id: 'q-very-long-identifier-123456',
+          question: '选一个方案',
+          options: [
+            { label: '这是一个超过十个字符的选项名称', description: '说明1' },
+            { label: '选项二' },
+            { label: '选项三' },
+          ],
+        },
+        {
+          id: 'q2',
+          question: '再多选',
+          multiSelect: true,
+          options: [{ label: 'X' }, { label: 'Y' }],
+        },
+      ],
+    };
+    const pending = handlers.get('user-questions/request')!(req, vi.fn());
+    await waitFor(() => interactions.question.hasPending(OPENID));
+
+    // 第 1 题（单选）：2 列排布，共 2 行，标签 ≤ 10 字符，group_id ≤ 16 字符
+    const card1 = (sendCard.mock.calls[0] as unknown[])[1] as {
+      markdown: string;
+      keyboard?: { content?: { rows?: Array<{ buttons: Array<{ render_data: { label: string }; action: { data?: string }; group_id?: string }> }> } };
+    };
+    const rows1 = card1.keyboard?.content?.rows ?? [];
+    expect(rows1).toHaveLength(2);
+    expect(rows1[0]!.buttons).toHaveLength(2);
+    expect(rows1[1]!.buttons).toHaveLength(1);
+    expect(Array.from(rows1[0]!.buttons[0]!.render_data.label).length).toBeLessThanOrEqual(10);
+    expect((rows1[0]!.buttons[0]!.group_id ?? '').length).toBeLessThanOrEqual(16);
+
+    // 点击第 1 题按钮
+    expect(
+      interactions.handleInteraction({
+        id: 'evt-q1',
+        user_openid: OPENID,
+        data: { resolved: { button_data: rows1[0]!.buttons[0]!.action.data } },
+      }),
+    ).toBe(true);
+
+    await waitFor(() => sendCard.mock.calls.length >= 2);
+    await waitFor(() => interactions.question.hasPending(OPENID));
+    // 第 2 题应使用 INTERACTION_CREATE:evt-q1 作为 targetOverride.eventId，且多选不带按钮
+    const [, card2, target2] = sendCard.mock.calls[1] as unknown as [
+      string,
+      { markdown: string; keyboard?: unknown },
+      { openid: string; eventId?: string } | undefined,
+    ];
+    expect(target2?.eventId).toBe('INTERACTION_CREATE:evt-q1');
+    expect(card2.keyboard).toBeUndefined();
+
+    // 旧题按钮再点击必须被忽略
+    expect(
+      interactions.handleInteraction({
+        id: 'evt-q1-stale',
+        user_openid: OPENID,
+        data: { resolved: { button_data: rows1[0]!.buttons[0]!.action.data } },
+      }),
+    ).toBe(false);
+
+    expect(interactions.question.handle(OPENID, '1,2')).toBe(true);
+    await expect(pending).resolves.toEqual({
+      answers: [
+        { id: 'q-very-long-identifier-123456', selected: ['这是一个超过十个字符的选项名称'] },
+        { id: 'q2', selected: ['X', 'Y'] },
+      ],
+    });
+  });
+});

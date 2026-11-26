@@ -717,4 +717,45 @@ describe('qq/stream · 长正文不得被静默截断（真机缺陷回归，202
     const seqs = h.client.sendCalls.map((c) => c.payload.msg_seq);
     expect(new Set(seqs).size).toBe(seqs.length);
   });
+
+  it('sendSerialized 支持 target.eventId 回复与长消息仅末片携带 keyboard', async () => {
+    const h = makeHarness({ throttleMs: 0 });
+    const keyboard = {
+      content: {
+        rows: [
+          {
+            buttons: [
+              {
+                id: 'b1',
+                render_data: { label: '确认', style: 1 },
+                action: { type: 1, permission: { type: 2 }, data: '{}' },
+                group_id: 'g1',
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const full = '填'.repeat(20000);
+    const res = await h.manager.sendSerialized(
+      { openid: 'openid-1', eventId: 'INTERACTION_CREATE:evt-9' },
+      {
+        msg_type: QQ_MSG_TYPE_MARKDOWN,
+        markdown: { content: full },
+        keyboard,
+      },
+    );
+    expect(res.ok).toBe(true);
+    expect(h.client.sendCalls.length).toBeGreaterThan(1);
+    for (const [i, call] of h.client.sendCalls.entries()) {
+      expect(call.payload.event_id).toBe('INTERACTION_CREATE:evt-9');
+      expect(call.payload.msg_id).toBeUndefined();
+      expect(call.payload.msg_seq).toBe(i + 1);
+      if (i < h.client.sendCalls.length - 1) {
+        expect(call.payload.keyboard).toBeUndefined();
+      } else {
+        expect(call.payload.keyboard).toEqual(keyboard);
+      }
+    }
+  });
 });

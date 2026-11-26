@@ -14,7 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { QqClient, type QqWebSocketLike, type QqWsEvent } from '../../src/qq/client.js';
-import { QQ_BOT_TOKEN_URL, QQ_API_BASE, QQ_INTENT_GROUP_AND_C2C_EVENT } from '../../src/constants/index.js';
+import { QQ_BOT_TOKEN_URL, QQ_API_BASE, QQ_DEFAULT_INTENTS } from '../../src/constants/index.js';
 import type { Logger } from '../../src/utils/logger.js';
 
 const silentLogger: Logger = { info: () => undefined, warn: () => undefined, error: () => undefined, debug: () => undefined };
@@ -274,7 +274,7 @@ describe('QqClient · WebSocket 生命周期', () => {
     expect(identify).toBeDefined();
     const d = identify!.d as Record<string, unknown>;
     expect(d.token).toBe('QQBot tok');
-    expect(d.intents).toBe(QQ_INTENT_GROUP_AND_C2C_EVENT);
+    expect(d.intents).toBe(QQ_DEFAULT_INTENTS);
     client.stop();
     expect(sockets.length).toBeGreaterThan(0);
   });
@@ -395,6 +395,47 @@ describe('QqClient · WebSocket 生命周期', () => {
     ws.emitMessage({ op: 0, t: 'C2C_MESSAGE_CREATE', d: { id: 'in-1', content: 'hi' } });
     await flush();
     expect(events).toEqual(['in-1']);
+    client.stop();
+  });
+
+  it('INTERACTION_CREATE 事件分发给 onInteraction；acknowledgeInteraction 调 PUT /interactions/{id}', async () => {
+    let putCalls = 0;
+    const { fn, calls } = gatewayFetch((url, init) => {
+      if (url.includes('/interactions/')) {
+        putCalls += 1;
+        if (putCalls === 1) return { status: 401, body: { code: 401, message: 'expired' } };
+        expect(init.method).toBe('PUT');
+        expect(JSON.parse(String(init.body))).toEqual({ code: 0 });
+        return { status: 200, body: {} };
+      }
+      return { body: {} };
+    });
+    const { client } = makeClient(fn);
+    const interactions: Array<{ id: string; buttonData?: string }> = [];
+    client.onInteraction((ev) => {
+      interactions.push({ id: ev.id, buttonData: ev.data?.resolved?.button_data });
+    });
+    await client.start();
+    const ws = FakeWebSocket.instances[0]!;
+    ws.emit('open');
+    ws.emitMessage({ op: 10, d: { heartbeat_interval: 45000 } });
+    await flush();
+    ws.emitMessage({
+      op: 0,
+      t: 'INTERACTION_CREATE',
+      d: {
+        id: 'evt-1',
+        scene: 'c2c',
+        user_openid: 'openid-1',
+        data: { type: 11, resolved: { button_id: 'b1', button_data: '{"t":"approval"}' } },
+      },
+    });
+    await flush();
+    expect(interactions).toEqual([{ id: 'evt-1', buttonData: '{"t":"approval"}' }]);
+
+    const ackRes = await client.acknowledgeInteraction('evt-1', 0);
+    expect(ackRes.ok).toBe(true);
+    expect(calls.filter((c) => c.url === `${QQ_API_BASE}/interactions/evt-1`)).toHaveLength(2);
     client.stop();
   });
 });

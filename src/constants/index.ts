@@ -12,6 +12,10 @@ export const QQ_API_BASE = 'https://api.sgroup.qq.com';
 export const QQ_BOT_TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken';
 /** 单聊事件 intent：GROUP_AND_C2C_EVENT */
 export const QQ_INTENT_GROUP_AND_C2C_EVENT = 1 << 25;
+/** 互动事件 intent：INTERACTION（buttons / INTERACTION_CREATE 必需，实测 K3） */
+export const QQ_INTENT_INTERACTION = 1 << 26;
+/** 默认网关订阅 intents */
+export const QQ_DEFAULT_INTENTS = QQ_INTENT_GROUP_AND_C2C_EVENT | QQ_INTENT_INTERACTION;
 
 // ──────────────────────── 消息类型（msg_type） ─────────────────────────
 

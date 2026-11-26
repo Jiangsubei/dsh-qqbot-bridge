@@ -31,6 +31,8 @@ import type {
   QqApiResult,
   QqC2CMessageEvent,
   QqClientLike,
+  QqInteractionEvent,
+  QqInteractionHandler,
   QqMessageHandler,
   QqReadyHandler,
   QqSendMessagePayload,
@@ -47,7 +49,9 @@ interface SentRecord {
 class FakeQqClient implements QqClientLike {
   readonly sent: SentRecord[] = [];
   readonly streamed: SentRecord[] = [];
+  readonly acked: Array<{ id: string; code: number }> = [];
   private messageHandlers: QqMessageHandler[] = [];
+  private interactionHandlers: QqInteractionHandler[] = [];
   private readyHandlers: QqReadyHandler[] = [];
   started = false;
 
@@ -66,8 +70,15 @@ class FakeQqClient implements QqClientLike {
   onC2CMessage(handler: QqMessageHandler): void {
     this.messageHandlers.push(handler);
   }
+  onInteraction(handler: QqInteractionHandler): void {
+    this.interactionHandlers.push(handler);
+  }
   onReady(handler: QqReadyHandler): void {
     this.readyHandlers.push(handler);
+  }
+  async acknowledgeInteraction(interactionId: string, code = 0): Promise<QqApiResult> {
+    this.acked.push({ id: interactionId, code });
+    return { ok: true, status: 200, body: {} };
   }
   async sendMessage(openid: string, payload: QqSendMessagePayload): Promise<QqApiResult> {
     this.sent.push({ openid, payload });
@@ -97,6 +108,11 @@ class FakeQqClient implements QqClientLike {
       ...event,
     } as QqC2CMessageEvent;
     for (const handler of this.messageHandlers) await handler(full);
+  }
+
+  /** 测试驱动：把一条按钮点击互动事件喂给插件 */
+  async emitInteraction(event: QqInteractionEvent): Promise<void> {
+    for (const handler of this.interactionHandlers) await handler(event);
   }
 }
 
@@ -503,5 +519,73 @@ describe('装配闭环：dsh-qqbot-bridge（真实 DSH 装配）', () => {
       if (savedId !== undefined) process.env.QQ_BOT_APP_ID = savedId;
       if (savedSecret !== undefined) process.env.QQ_BOT_SECRET = savedSecret;
     }
+  });
+
+  it('14) 审批卡片与按钮回调真实装配闭环：发 Markdown+keyboard 并在点击后 ack + allowed-once', async () => {
+    booted = await bootDshQqbotBridge({ dshHome: home, mountPlugin: false });
+    const fake = new FakeQqClient();
+    wiring = await wire(
+      booted.ctx,
+      { app_id: 'test-app-id', app_secret: 'test-app-secret' },
+      { createClient: () => fake, autoStart: false },
+    );
+
+    const created = await wiring!.control.createSession('openid-card');
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    // 构造一次由 QQ 发起的回合（使 ownTurn 为 true）
+    const session = booted.ctx.agents.get(created.sessionId as never)?.session as
+      | { id: string }
+      | undefined;
+    const ctxEmit = booted.ctx as unknown as {
+      emit: (name: string, ...args: unknown[]) => void;
+      waterfall: (name: string, ...args: unknown[]) => Promise<unknown>;
+    };
+    const msgId = 'msg-own-card';
+    await fake.emitC2C({ id: 'qq-msg-card', author: { user_openid: 'openid-card' }, content: '/状态' });
+    // 驱动一次真实投喂使 isOwnTurn 为 true（与 11 同源）
+    await wiring!.control.send('openid-card', '测试审批卡片回合');
+    await waitFor(() => wiring!.isOwnTurn(created.sessionId), 2000);
+    const sentBefore = fake.sent.length;
+
+    // 模拟一次从本桥接标记的回合中触发 tool/call + approval/request
+    if (session) {
+      const seq = (session as { seq?: number }).seq ?? 0;
+      ctxEmit.emit('session/event', session, {
+        seq,
+        time: Date.now(),
+        type: 'tool/call',
+        data: { turn: 1, step: 1, callId: 'call-asm-1', name: 'bash', arguments: '{"command":"ls -la"}' },
+      });
+    }
+    const approvalPromise = ctxEmit.waterfall(
+      'approval/request',
+      {
+        agent: { id: created.sessionId, session },
+        toolName: 'bash',
+        callId: 'call-asm-1',
+        reason: '查看目录',
+      },
+      async () => 'unavailable',
+    );
+
+    const cardSent = await waitFor(() => fake.sent.length > sentBefore, 2000);
+    expect(cardSent).toBe(true);
+    const cardPayload = fake.sent.at(-1)!.payload as QqSendMessagePayload;
+    expect(cardPayload.msg_type).toBe(2);
+    expect(cardPayload.markdown?.content).toContain('ls -la');
+    const allowBtn = cardPayload.keyboard?.content?.rows?.[0]?.buttons?.[0];
+    expect(allowBtn?.action?.data).toBeDefined();
+
+    await fake.emitInteraction({
+      id: 'int-asm-1',
+      user_openid: 'openid-card',
+      data: { resolved: { button_data: allowBtn!.action.data } },
+    });
+
+    await expect(approvalPromise).resolves.toBe('allowed-once');
+    expect(fake.acked).toContainEqual({ id: 'int-asm-1', code: 0 });
+    void msgId;
   });
 });
