@@ -259,7 +259,9 @@ async function createWiring(
   const resolveTarget = (openid: string): OutboundTarget | undefined =>
     anchors.active(openid) ?? lastInbound.get(openid);
 
-  type EventCtx = { on(event: string, handler: (...args: unknown[]) => unknown): unknown };
+  type EventCtx = {
+    on(event: string, handler: (...args: unknown[]) => unknown, options?: { prepend?: boolean }): unknown;
+  };
   const eventCtx = ctx as unknown as EventCtx;
 
   const offTurnStart = eventCtx.on('session/event', (...args: unknown[]) => {
@@ -329,7 +331,7 @@ async function createWiring(
     ownTurn: isOwnTurn,
     logger,
   });
-  disposers.push(interactions.attach(ctx));
+  disposers.push(interactions.attach(eventCtx));
 
   const offToolCall = eventCtx.on('session/event', (...args: unknown[]) => {
     const event = args[1] as
@@ -768,7 +770,9 @@ export async function wire(
   isInitializing = false;
 
   // ── 插件根生命周期清理 ──
-  type EventCtx = { on(event: string, handler: (...args: unknown[]) => unknown): unknown };
+  type EventCtx = {
+    on(event: string, handler: (...args: unknown[]) => unknown, options?: { prepend?: boolean }): unknown;
+  };
   const eventCtx = ctx as unknown as EventCtx;
 
   const rootDispose = async (): Promise<void> => {
