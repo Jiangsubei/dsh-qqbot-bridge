@@ -36,4 +36,4 @@ napcat_download/
 *.sqlite
 
 # Internal documentation and development archives
-docs/archive/
+devlog/archive/
