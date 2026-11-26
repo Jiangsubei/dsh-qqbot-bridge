@@ -36,11 +36,13 @@
     }
   },
   "scripts": {
+    "prepublishOnly": "pnpm run build && pnpm run check:privacy",
     "build": "tsc && pnpm run build:client",
     "typecheck": "tsc --noEmit",
     "typecheck:all": "tsc -p tsconfig.test.json",
     "test": "pnpm run build && vitest run",
     "test:quick": "vitest run",
+    "check:privacy": "tsx scripts/privacy-guard.ts",
     "probe:e11": "tsx scripts/probe-e11.ts",
     "probe:qq": "tsx scripts/probe-qq.ts",
     "clean": "rm -rf dist",

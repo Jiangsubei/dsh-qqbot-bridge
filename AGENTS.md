@@ -71,6 +71,10 @@
 | 死代码 / noop 导出 / v2 预留空方法 | napcat `tools/index.ts:708`、`prompt/dynamic.ts:14-18`、`server.ts:359-389` | 不搬；本项目不新增死代码 |
 | 超千行单体与混合职责的单函数 | napcat `src/index.ts:358-795` | 拆入站管线（见方向总纲 §6） |
 
+### 2.5 隐私安全与敏感信息防范原则
+- **严禁代码库出现真实隐私信息与凭据**：严禁在源码、契约测试、注释、文档（含 `docs/` 调研纪要与交付报告）、探针脚本或提交历史（Git Commit Message）中写入任何真实个人隐私或敏感凭据——包括但不限于：QQ 官方 Bot `AppID`、`Bot ID`、`AppSecret`、真实机器人昵称、真实用户 `openid` / `union_openid` / `group_openid`、真实个人 QQ 号、真实群号、Token、Cookie、密码、手机号等；
+- **会话内临时测试与落盘原则**：在与用户的交互会话中进行临时探查、真机探针与测试调用时可使用本地 `$DSH_HOME/.credentials.yaml` 或环境变量中的临时凭据（原始载荷落盘在 `.gitignore` 忽略的 `logs/` 下），**但只要需要写入受跟踪的项目文件、归档文档或纳入 Git 提交，必须执行严格的脱敏替换**（统一使用 `privacy/policy.json` 允许的标准 Mock ID 与占位符，如 `1000000000`、`2000000001`、`7000000000000000001`、`test-app-id`、`test-app-secret`、`openid-1` 等），绝不允许将未经脱敏的真实隐私或凭据固化到代码库或 Git 历史中。
+
 ---
 
 ## 3. 测试驱动开发 (TDD) 与测试保护红线
@@ -107,6 +111,13 @@
   **协议内核、命令系统、流式桥接、消息组装等业务逻辑一律不得在探针结论之前进入 `src/`。**
 - **自然转绿原则**：红着的契约测试必须且只能在对应后续阶段的功能开发完成、真实装配接线并通过验证后，自然转为绿色。
 
+### 3.5 隐私守卫（privacy-guard）红线
+- **测试必须常绿**：`tests/contract/privacy-guard.test.ts` 是真实 `AppID` / `Bot ID` / `AppSecret` / `openid` / QQ 号 / 群号不得入库的红线契约，**必须始终保持绿色（通过）**；
+- **严禁绕过**：严禁以任何形式跳过、删除、禁用、放宽断言或篡改该测试；严禁通过扩大 `privacy/policy.json` 允许段、伪造例外值等方式让真实隐私或凭据“合法化”；
+- **只能改用 Mock ID / 占位符**：一旦守卫报告违规，唯一正确处理是**把违规值替换为标准 Mock ID 或占位符**（见 `privacy/policy.json` 允许段），若已误入未推送提交还必须同步重写 Git 提交历史，而不是修改守卫；
+- **手动入口**：`pnpm check:privacy` 可单独运行守卫；`pnpm test` / `pnpm test:quick` 会通过 `vitest run` 自动执行该契约测试；`prepublishOnly` 发布前钩子亦强制执行 `pnpm run check:privacy`；
+- **报错仅掩码**：守卫日志只输出掩码后的 ID/凭据，排查时请依据 `文件:行号` 定位，**严禁把真实值回填到报告、文档或提交信息中**。
+
 ---
 
 ## 4. Git 提交规范
@@ -116,7 +127,7 @@
 1. `git log -n 5`：确认最近提交记录及提交信息风格；
 2. `git status`：确认工作区修改范围；
 3. `git diff`：细致审查修改的代码内容，确认没有误改、没有残留的调试日志或临时文件；
-4. `pnpm typecheck` & `pnpm test`：确保编译通过且相关测试全部通过。
+4. `pnpm typecheck`、`pnpm check:privacy` & `pnpm test`：确保编译通过、隐私守卫零违规（未泄露真实 AppID / Bot ID / AppSecret / openid 等）且相关测试全部通过。
 
 > **⚠️ 真机交付前强制 build（沿用 napcat PF-001 实测翻车教训，2026-08-30）：** link 部署时 DSH 通过
 > `package.json` `main → dist/` 加载编译产物。若只改 `src/` 并提交、却漏跑 `pnpm build`，则 DSH 仍跑

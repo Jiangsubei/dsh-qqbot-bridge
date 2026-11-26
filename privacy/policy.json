@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "description": "隐私守卫策略：只允许标准 Mock ID / 占位符出现在身份与凭据上下文中，杜绝真实 AppID / Bot ID / AppSecret / openid / QQ 号入库。",
+  "idLength": {
+    "minDigits": 7,
+    "maxDigits": 11
+  },
+  "botIdLength": {
+    "minDigits": 7,
+    "maxDigits": 20
+  },
+  "allowedRanges": [
+    { "from": 1000000000, "to": 1000000099, "note": "标准 Mock：Bot AppID / 用户 / Bot QQ（含隐私脱敏段 1000000010-1000000019）" },
+    { "from": 2000000000, "to": 2000000099, "note": "标准 Mock：普通用户" },
+    { "from": 3000000000, "to": 3000000099, "note": "标准 Mock：群聊" },
+    { "from": 3200000000, "to": 3200000099, "note": "标准 Mock：群聊（并发/队列场景）" },
+    { "from": 4000000000, "to": 4000000099, "note": "标准 Mock：陌生人 / 临时会话" },
+    { "from": 8000000000, "to": 8000000099, "note": "标准 Mock：测试群" },
+    { "from": "7000000000000000000", "to": "7000000000000000099", "note": "标准 Mock：QQ 官方 Bot ID（19 位雪花形态）" }
+  ],
+  "allowedLiterals": [
+    "10000",
+    "20050606",
+    "102000001",
+    "10203040"
+  ],
+  "identityKeys": [
+    "user_id",
+    "userId",
+    "userID",
+    "group_id",
+    "groupId",
+    "groupID",
+    "sender_id",
+    "senderId",
+    "target_id",
+    "targetId",
+    "self_id",
+    "selfId",
+    "from_user",
+    "fromUser",
+    "target_uin",
+    "targetUin",
+    "friend_id",
+    "friendId",
+    "peer_id",
+    "peerId",
+    "owner_id",
+    "ownerId",
+    "admin_id",
+    "adminId",
+    "bot_qq",
+    "botQQ",
+    "uin",
+    "qq"
+  ],
+  "botIdentityKeys": [
+    "QQ_BOT_APP_ID",
+    "app_id",
+    "appId",
+    "appID",
+    "appid",
+    "bot_id",
+    "botId",
+    "botID"
+  ],
+  "secretKeys": [
+    "QQ_BOT_SECRET",
+    "app_secret",
+    "appSecret",
+    "client_secret",
+    "clientSecret",
+    "bot_secret",
+    "botSecret"
+  ],
+  "openidKeys": [
+    "user_openid",
+    "userOpenid",
+    "union_openid",
+    "unionOpenid",
+    "group_openid",
+    "groupOpenid",
+    "group_member_openid",
+    "openid"
+  ],
+  "ignore": [
+    "node_modules/**",
+    "dist/**",
+    "coverage/**",
+    ".git/**",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "*.zst",
+    "*.png",
+    "*.jpg",
+    "*.jpeg",
+    "*.gif",
+    "*.webp",
+    "*.ico",
+    "*.sqlite",
+    "*.db",
+    "*.bundle"
+  ]
+}
