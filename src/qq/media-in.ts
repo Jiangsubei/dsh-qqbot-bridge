@@ -65,6 +65,44 @@ const MIME_TO_EXT: Record<string, string> = {
   'text/markdown': 'md',
 };
 
+/**
+ * 按魔数（magic bytes）识别图片真实格式与扩展名。
+ * QQ 网关对图片常统一标注 content_type=image/png，文件头才是可靠来源。
+ */
+export function sniffImageFromBytes(bytes: Uint8Array): { ext: string; mime: string } | undefined {
+  if (bytes.length >= 6) {
+    const head = Buffer.from(bytes.subarray(0, 6)).toString('latin1');
+    if (head === 'GIF87a' || head === 'GIF89a') return { ext: 'gif', mime: 'image/gif' };
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return { ext: 'png', mime: 'image/png' };
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return { ext: 'jpg', mime: 'image/jpeg' };
+  }
+  if (
+    bytes.length >= 12 &&
+    Buffer.from(bytes.subarray(0, 4)).toString('latin1') === 'RIFF' &&
+    Buffer.from(bytes.subarray(8, 12)).toString('latin1') === 'WEBP'
+  ) {
+    return { ext: 'webp', mime: 'image/webp' };
+  }
+  if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) {
+    return { ext: 'bmp', mime: 'image/bmp' };
+  }
+  return undefined;
+}
+
 /** MIME → 扩展名推断 */
 export function getExtensionFromMime(mimeType?: string | null): string {
   if (!mimeType) return 'bin';
@@ -228,8 +266,10 @@ export class QqMediaReceiver implements MediaReceiver {
       return undefined;
     }
 
-    const mimeType = resolveMime(kind, attachment.content_type, downloaded.contentType, Boolean(wavUrl));
-    const ext = getExtensionFromMime(mimeType);
+    const sniffed = kind === 'image' ? sniffImageFromBytes(downloaded.bytes) : undefined;
+    const mimeType =
+      sniffed?.mime ?? resolveMime(kind, attachment.content_type, downloaded.contentType, Boolean(wavUrl));
+    const ext = sniffed?.ext ?? getExtensionFromMime(mimeType);
     const fileName = resolveFileName(attachment.filename, url, index, kind, ext);
     const filePath = path.join(sessionDir, fileName);
     // 双保险：净化后的文件名绝不允许越出 session 目录

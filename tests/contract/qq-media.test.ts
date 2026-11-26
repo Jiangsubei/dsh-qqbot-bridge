@@ -31,7 +31,7 @@ import {
   MediaUploadError,
   type QqMediaClient,
 } from '../../src/qq/media-out.js';
-import { QqMediaReceiver, validateSafeUrl } from '../../src/qq/media-in.js';
+import { QqMediaReceiver, sniffImageFromBytes, validateSafeUrl } from '../../src/qq/media-in.js';
 import { MsgSeqSlotAllocator } from '../../src/qq/stream.js';
 import { registerAgentTools } from '../../src/tools/index.js';
 import {
@@ -729,6 +729,61 @@ describe('QqMediaReceiver · E8 入站附件', () => {
   it('无 attachments → 返回空数组', async () => {
     const { client } = makeReceiveClient({});
     await expect(receiver(client).fetchAll({ id: 'in-8' }, 's')).resolves.toEqual([]);
+  });
+
+  it('magic bytes：QQ 网关误标为 image/png 的 JPEG/GIF/WebP/BMP 按文件头修正扩展名与 MIME', async () => {
+    const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+    const gif = Buffer.from('GIF89a\x01\x00\x01\x00', 'latin1');
+    const webp = Buffer.concat([Buffer.from('RIFF', 'latin1'), Buffer.alloc(4), Buffer.from('WEBP', 'latin1')]);
+    const bmp = Buffer.from([0x42, 0x4d, 0x00, 0x00]);
+    const unknown = Buffer.from([0x01, 0x02, 0x03, 0x04]);
+
+    const { client } = makeReceiveClient({
+      'https://multimedia.nt.qq.com.cn/a.png': { bytes: jpg, contentType: 'image/png' },
+      'https://multimedia.nt.qq.com.cn/b.png': { bytes: gif, contentType: 'image/png' },
+      'https://multimedia.nt.qq.com.cn/c.png': { bytes: webp, contentType: 'image/png' },
+      'https://multimedia.nt.qq.com.cn/d.png': { bytes: bmp, contentType: 'image/png' },
+      'https://multimedia.nt.qq.com.cn/e.png': { bytes: unknown, contentType: 'image/png' },
+    });
+
+    const media = await receiver(client).fetchAll(
+      {
+        id: 'in-magic',
+        attachments: [
+          { url: 'https://multimedia.nt.qq.com.cn/a.png', filename: 'hash1.png', content_type: 'image/png' },
+          { url: 'https://multimedia.nt.qq.com.cn/b.png', filename: 'hash2.png', content_type: 'image/png' },
+          { url: 'https://multimedia.nt.qq.com.cn/c.png', filename: 'hash3.png', content_type: 'image/png' },
+          { url: 'https://multimedia.nt.qq.com.cn/d.png', filename: 'hash4.png', content_type: 'image/png' },
+          { url: 'https://multimedia.nt.qq.com.cn/e.png', filename: 'hash5.png', content_type: 'image/png' },
+        ],
+      },
+      'session-magic',
+    );
+
+    expect(media).toHaveLength(5);
+    expect(media[0]!.fileName).toBe('hash1.jpg');
+    expect(media[0]!.mimeType).toBe('image/jpeg');
+    expect(media[0]!.imageDataUrl).toBe(`data:image/jpeg;base64,${jpg.toString('base64')}`);
+
+    expect(media[1]!.fileName).toBe('hash2.gif');
+    expect(media[1]!.mimeType).toBe('image/gif');
+    expect(media[1]!.imageDataUrl).toBe(`data:image/gif;base64,${gif.toString('base64')}`);
+
+    expect(media[2]!.fileName).toBe('hash3.webp');
+    expect(media[2]!.mimeType).toBe('image/webp');
+
+    expect(media[3]!.fileName).toBe('hash4.bmp');
+    expect(media[3]!.mimeType).toBe('image/bmp');
+
+    // 未识别的字节保持声明扩展名与 MIME 兜底
+    expect(media[4]!.fileName).toBe('hash5.png');
+    expect(media[4]!.mimeType).toBe('image/png');
+
+    expect(sniffImageFromBytes(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toEqual({
+      ext: 'png',
+      mime: 'image/png',
+    });
+    expect(sniffImageFromBytes(new Uint8Array([0x01, 0x02]))).toBeUndefined();
   });
 });
 
