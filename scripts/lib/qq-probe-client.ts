@@ -19,6 +19,7 @@ import * as path from 'node:path';
 export const QQ_BOT_TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken';
 export const QQ_API_BASE = 'https://api.sgroup.qq.com';
 export const QQ_INTENT_GROUP_AND_C2C_EVENT = 1 << 25;
+export const QQ_INTENT_INTERACTION = 1 << 26;
 
 export interface QQCredentials {
   appId: string;
@@ -74,12 +75,14 @@ export function resolveCredentials(explicit?: Partial<QQCredentials>): QQCredent
 
 export interface QQProbeClientOptions {
   credentials: QQCredentials;
+  intents?: number;
   logger?: (msg: string) => void;
 }
 
 export class QQProbeClient {
   private readonly appId: string;
   private readonly appSecret: string;
+  private readonly intents: number;
   private readonly log: (msg: string) => void;
 
   private accessToken: string | null = null;
@@ -96,12 +99,15 @@ export class QQProbeClient {
 
   /** 收到单聊消息的回调（含原始事件体，探针需要 message_scene.ext） */
   public onC2CMessage: ((event: any) => void) | null = null;
+  /** 收到任意 DISPATCH 事件的回调（如 INTERACTION_CREATE 等探针观测用） */
+  public onAnyDispatch: ((eventType: string, data: unknown) => void) | null = null;
   /** 连接就绪（READY）回调 */
   public onReady: ((info: { sessionId: string; botId: string; botName: string }) => void) | null = null;
 
   constructor(options: QQProbeClientOptions) {
     this.appId = options.credentials.appId;
     this.appSecret = options.credentials.appSecret;
+    this.intents = options.intents ?? QQ_INTENT_GROUP_AND_C2C_EVENT;
     this.log = options.logger ?? ((m) => console.log(m));
   }
 
@@ -225,6 +231,9 @@ export class QQProbeClient {
         } else if (payload.t === 'C2C_MESSAGE_CREATE') {
           this.onC2CMessage?.(payload.d);
         }
+        if (typeof payload.t === 'string') {
+          this.onAnyDispatch?.(payload.t, payload.d);
+        }
         break;
       }
       case 11:
@@ -254,7 +263,7 @@ export class QQProbeClient {
       op: 2,
       d: {
         token: `QQBot ${token}`,
-        intents: QQ_INTENT_GROUP_AND_C2C_EVENT,
+        intents: this.intents,
         properties: { os: process.platform, browser: 'dsh-qqbot-bridge-probe', device: 'dsh-qqbot-bridge-probe' },
       },
     });
@@ -296,9 +305,9 @@ export class QQProbeClient {
 
   // ─────────────────────────────── REST ───────────────────────────────
 
-  private async request(url: string, payload: unknown): Promise<QQApiResult> {
+  private async request(url: string, payload: unknown, method: 'POST' | 'PUT' = 'POST'): Promise<QQApiResult> {
     const res = await fetch(url, {
-      method: 'POST',
+      method,
       headers: await this.authHeaders(),
       body: JSON.stringify(payload),
     });
@@ -332,6 +341,11 @@ export class QQProbeClient {
 
   /** 通用 POST（相对 `/v2` 的路径），供探针调用非消息类接口 */
   public async apiPost(pathname: string, payload: unknown): Promise<QQApiResult> {
-    return this.request(`${QQ_API_BASE}${pathname}`, payload);
+    return this.request(`${QQ_API_BASE}${pathname}`, payload, 'POST');
+  }
+
+  /** 通用 PUT（如 `PUT /interactions/{interaction_id}`） */
+  public async apiPut(pathname: string, payload: unknown): Promise<QQApiResult> {
+    return this.request(`${QQ_API_BASE}${pathname}`, payload, 'PUT');
   }
 }
